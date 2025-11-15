@@ -15,7 +15,7 @@ namespace ai
         if (inviter == player)
             return false;
 
-        if (!player->GetPlayerbotAI() && !ai->GetSecurity()->CheckLevelFor(PlayerbotSecurityLevel::PLAYERBOT_SECURITY_INVITE, true, player))
+        if (!player->GetPlayerbotAI() && !ai->GetSecurity()->CheckLevelFor(PlayerbotSecurityLevel::PLAYERBOT_SECURITY_INVITE, false, player))
             return false;
 
         if (Group* group = inviter->GetGroup())
