@@ -168,6 +168,28 @@ namespace ai
 	{
     public:
         ReachSpellAction(PlayerbotAI* ai) : ReachTargetAction(ai, "reach spell", ai->GetRange("spell")) {}
+
+        virtual bool Execute(Event& event) override
+        {
+            Unit* target = GetTarget();
+            if (target)
+            {
+                float distance = bot->GetDistance(target, true, DIST_CALC_COMBAT_REACH);
+                const float desiredDistance = sPlayerbotAIConfig.meleeDistance + sPlayerbotAIConfig.contactDistance;
+                if (distance <= desiredDistance)
+                {
+                    float originalRange = range;
+                    range = desiredDistance + sPlayerbotAIConfig.contactDistance;
+                    bool result = ReachTargetAction::Execute(event);
+                    range = originalRange;
+                    return result;
+                }
+                if (distance <= range)
+                    return true;
+            }
+
+            return ReachTargetAction::Execute(event);
+        }
     };
 
     class ReachPullAction : public ReachTargetAction
