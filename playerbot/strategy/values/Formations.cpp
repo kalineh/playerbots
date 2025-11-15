@@ -54,7 +54,7 @@ float Formation::GetOffset()
 
 WorldLocation FollowFormation::GetLocation()
 {
-    float range = ai->GetRange("follow");
+    float range = GetFollowRange();
 
     Unit* followTarget = AI_VALUE(Unit*, "follow target");
     if (!followTarget)
@@ -401,7 +401,8 @@ namespace ai
 
             return followAngle + delta;
         }
-        virtual float GetOffset() override { return ai->GetRange("follow"); }
+        virtual float GetOffset() override { return sPlayerbotAIConfig.farDistance; }
+        virtual float GetFollowRange() override { return sPlayerbotAIConfig.farDistance; }
     };
 
     class CustomFormation : public MoveAheadFormation

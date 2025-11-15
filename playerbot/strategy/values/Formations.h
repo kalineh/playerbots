@@ -28,6 +28,7 @@ namespace ai
     public:
         FollowFormation(PlayerbotAI* ai, std::string name) : Formation(ai, name) {}
         virtual WorldLocation GetLocation();
+        virtual float GetFollowRange() { return ai->GetRange("follow"); }
     };
 
     class MoveFormation : public Formation
