@@ -2,6 +2,7 @@
 #include "playerbot/playerbot.h"
 #include <stdarg.h>
 #include <iomanip>
+#include <sstream>
 
 #include "playerbot/AiFactory.h"
 
@@ -41,6 +42,7 @@
 #include "Guilds/GuildMgr.h"
 #include "Chat/ChannelMgr.h"
 #include "PlayerbotLLMInterface.h"
+#include "playerbot/strategy/generic/ClassStrategy.h"
 
 #include <boost/algorithm/string.hpp>
 
@@ -2156,6 +2158,104 @@ void PlayerbotAI::ChangeStrategy(const std::string& names, BotState type)
             engine->ChangeStrategy(names);
         }
     }
+}
+
+void PlayerbotAI::FriendStrategyAdded()
+{
+    if (friendStrategyRefCount++ == 0)
+        EnableFriendMode();
+}
+
+void PlayerbotAI::FriendStrategyRemoved()
+{
+    if (!friendStrategyRefCount)
+        return;
+
+    friendStrategyRefCount--;
+    if (!friendStrategyRefCount)
+        DisableFriendMode();
+}
+
+void PlayerbotAI::EnableFriendMode()
+{
+    if (friendModeEnabled)
+        return;
+
+    friendModeEnabled = true;
+    for (auto& entry : friendStrategies)
+        entry.clear();
+
+    std::set<std::string> supported = aiObjectContext->GetSupportedStrategies();
+    for (const std::string& name : supported)
+    {
+        if (name.empty() || name == "friend")
+            continue;
+
+        Strategy* strategy = aiObjectContext->GetStrategy(name);
+        if (!IsFriendCandidateStrategy(strategy))
+            continue;
+
+        ApplyFriendStrategy(name, BotState::BOT_STATE_COMBAT);
+        ApplyFriendStrategy(name, BotState::BOT_STATE_NON_COMBAT);
+    }
+}
+
+void PlayerbotAI::DisableFriendMode()
+{
+    if (!friendModeEnabled)
+        return;
+
+    for (uint8 i = 0; i < (uint8)BotState::BOT_STATE_ALL; ++i)
+    {
+        BotState state = static_cast<BotState>(i);
+        std::set<std::string>& applied = friendStrategies[i];
+        for (const std::string& name : applied)
+        {
+            if (HasStrategy(name, state))
+            {
+                std::ostringstream out;
+                out << "-" << name;
+                ChangeStrategy(out.str(), state);
+            }
+        }
+        applied.clear();
+    }
+
+    friendModeEnabled = false;
+}
+
+void PlayerbotAI::ApplyFriendStrategy(const std::string& name, BotState state)
+{
+    size_t index = static_cast<size_t>(state);
+    if (index >= friendStrategies.size())
+        return;
+
+    if (HasStrategy(name, state))
+        return;
+
+    std::ostringstream change;
+    change << "+" << name;
+    ChangeStrategy(change.str(), state);
+    friendStrategies[index].insert(name);
+}
+
+bool PlayerbotAI::IsFriendCandidateStrategy(Strategy* strategy) const
+{
+    if (!strategy)
+        return false;
+
+    if (dynamic_cast<PlaceholderStrategy*>(strategy))
+        return false;
+
+    return dynamic_cast<ClassStrategy*>(strategy) ||
+           dynamic_cast<AoeStrategy*>(strategy) ||
+           dynamic_cast<BuffStrategy*>(strategy) ||
+           dynamic_cast<BoostStrategy*>(strategy) ||
+           dynamic_cast<CcStrategy*>(strategy) ||
+           dynamic_cast<CureStrategy*>(strategy) ||
+           dynamic_cast<OffhealStrategy*>(strategy) ||
+           dynamic_cast<OffdpsStrategy*>(strategy) ||
+           dynamic_cast<StealthStrategy*>(strategy);
 }
 
 void PlayerbotAI::PrintStrategies(Player* requester, BotState type)

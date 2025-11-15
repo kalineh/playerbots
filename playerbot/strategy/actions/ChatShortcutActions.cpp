@@ -231,3 +231,25 @@ bool MaxDpsChatShortcutAction::Execute(Event& event)
     ai->TellPlayerNoFacing(requester, "Max DPS!");
     return true;
 }
+
+bool FriendModeChatShortcutAction::Execute(Event& event)
+{
+    Player* requester = event.getOwner() ? event.getOwner() : GetMaster();
+    if (!requester)
+        return false;
+
+    ai->ChangeStrategy("+friend", BotState::BOT_STATE_ALL);
+    ai->TellPlayerNoFacing(requester, "Friend mode activated.");
+    return true;
+}
+
+bool StrictModeChatShortcutAction::Execute(Event& event)
+{
+    Player* requester = event.getOwner() ? event.getOwner() : GetMaster();
+    if (!requester)
+        return false;
+
+    ai->ChangeStrategy("-friend", BotState::BOT_STATE_ALL);
+    ai->TellPlayerNoFacing(requester, "Strict mode restored.");
+    return true;
+}

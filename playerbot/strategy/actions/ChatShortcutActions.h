@@ -86,4 +86,20 @@ namespace ai
         virtual bool Execute(Event& event) override;
         virtual bool isUsefulWhenStunned() override { return true; }
     };
+
+    class FriendModeChatShortcutAction : public ChatCommandAction
+    {
+    public:
+        FriendModeChatShortcutAction(PlayerbotAI* ai) : ChatCommandAction(ai, "friend chat shortcut") {}
+        bool Execute(Event& event) override;
+        bool isUsefulWhenStunned() override { return true; }
+    };
+
+    class StrictModeChatShortcutAction : public ChatCommandAction
+    {
+    public:
+        StrictModeChatShortcutAction(PlayerbotAI* ai) : ChatCommandAction(ai, "strict chat shortcut") {}
+        bool Execute(Event& event) override;
+        bool isUsefulWhenStunned() override { return true; }
+    };
 }

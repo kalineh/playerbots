@@ -10,6 +10,8 @@
 #include "BotState.h"
 #include "PlayerTalentSpec.h"
 #include <stack>
+#include <array>
+#include <set>
 #include "strategy/IterateItemsMask.h"
 #include "RandomPlayerbotMgr.h"
 
@@ -397,6 +399,9 @@ public:
     void ResetStrategies(bool autoLoad = true);
     void ReInitCurrentEngine();
     void Reset(bool full = false);
+    void FriendStrategyAdded();
+    void FriendStrategyRemoved();
+    bool IsFriendMode() const { return friendModeEnabled; }
     bool IsTank(Player* player, bool inGroup = true);
     bool IsHeal(Player* player, bool inGroup = true);
     bool IsRanged(Player* player, bool inGroup = true);
@@ -680,6 +685,10 @@ public:
 private:
     bool UpdateAIReaction(uint32 elapsed, bool minimal, bool isStunned);
     void UpdateFaceTarget(uint32 elapsed, bool minimal);
+    void EnableFriendMode();
+    void DisableFriendMode();
+    void ApplyFriendStrategy(const std::string& name, BotState state);
+    bool IsFriendCandidateStrategy(Strategy* strategy) const;
 
 protected:
 	Player* bot;
@@ -714,6 +723,9 @@ protected:
     bool isPlayerFriend = false;
     bool isMovingToTransport = false;
     bool shouldLogOut = false;
+    bool friendModeEnabled = false;
+    uint8 friendStrategyRefCount = 0;
+    std::array<std::set<std::string>, static_cast<size_t>(BotState::BOT_STATE_ALL)> friendStrategies;
 
 #ifdef BUILD_ELUNA
     MaNGOS::unique_weak_ptr<PlayerbotAI> m_weakRef;
