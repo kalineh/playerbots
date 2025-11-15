@@ -2244,6 +2244,9 @@ bool PlayerbotAI::IsFriendCandidateStrategy(Strategy* strategy) const
     if (!strategy)
         return false;
 
+    if (dynamic_cast<SpecPlaceholderStrategy*>(strategy))
+        return true;
+
     if (dynamic_cast<PlaceholderStrategy*>(strategy))
         return false;
 
