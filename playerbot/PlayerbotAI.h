@@ -402,6 +402,8 @@ public:
     void FriendStrategyAdded();
     void FriendStrategyRemoved();
     bool IsFriendMode() const { return friendModeEnabled; }
+    void SetFriendReportRecipient(Player* player);
+    void ReportFriendModeStatus(Player* recipient, bool includeSkipped = true);
     bool IsTank(Player* player, bool inGroup = true);
     bool IsHeal(Player* player, bool inGroup = true);
     bool IsRanged(Player* player, bool inGroup = true);
@@ -724,6 +726,7 @@ protected:
     bool isMovingToTransport = false;
     bool shouldLogOut = false;
     bool friendModeEnabled = false;
+    ObjectGuid friendReportTarget;
     uint8 friendStrategyRefCount = 0;
     std::array<std::set<std::string>, static_cast<size_t>(BotState::BOT_STATE_ALL)> friendStrategies;
 

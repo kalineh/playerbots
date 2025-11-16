@@ -238,8 +238,15 @@ bool FriendModeChatShortcutAction::Execute(Event& event)
     if (!requester)
         return false;
 
+    const bool wasFriendMode = ai->IsFriendMode();
+    ai->SetFriendReportRecipient(requester);
     ai->ChangeStrategy("+friend", BotState::BOT_STATE_ALL);
-    ai->TellPlayerNoFacing(requester, "Friend mode activated.");
+    ai->TellPlayerNoFacing(requester, "Friend mode activated. (1234)");
+    if (wasFriendMode)
+    {
+        ai->ReportFriendModeStatus(requester);
+        ai->SetFriendReportRecipient(nullptr);
+    }
     return true;
 }
 
