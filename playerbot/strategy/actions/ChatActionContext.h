@@ -153,6 +153,7 @@ namespace ai
             creators["flee chat shortcut"] = [](PlayerbotAI* ai) { return new FleeChatShortcutAction(ai); };
             creators["runaway chat shortcut"] = [](PlayerbotAI* ai) { return new GoawayChatShortcutAction(ai); };
             creators["grind chat shortcut"] = [](PlayerbotAI* ai) { return new GrindChatShortcutAction(ai); };
+            creators["solo chat shortcut"] = [](PlayerbotAI* ai) { return new SoloChatShortcutAction(ai); };
             creators["tank attack chat shortcut"] = [](PlayerbotAI* ai) { return new TankAttackChatShortcutAction(ai); };
             creators["friend chat shortcut"] = [](PlayerbotAI* ai) { return new FriendModeChatShortcutAction(ai); };
             creators["strict chat shortcut"] = [](PlayerbotAI* ai) { return new StrictModeChatShortcutAction(ai); };

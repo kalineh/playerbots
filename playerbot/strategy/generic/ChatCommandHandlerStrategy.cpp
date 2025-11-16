@@ -272,6 +272,10 @@ void ChatCommandHandlerStrategy::InitReactionTriggers(std::list<TriggerNode*> &t
         NextAction::array(0, new NextAction("grind chat shortcut", relevance), NULL)));
 
     triggers.push_back(new TriggerNode(
+        "solo",
+        NextAction::array(0, new NextAction("solo chat shortcut", relevance), NULL)));
+
+    triggers.push_back(new TriggerNode(
         "friend",
         NextAction::array(0, new NextAction("friend chat shortcut", relevance), NULL)));
 

@@ -71,6 +71,14 @@ namespace ai
         virtual bool isUsefulWhenStunned() override { return true; }
     };
 
+    class SoloChatShortcutAction : public ReturnPositionResetAction
+    {
+    public:
+        SoloChatShortcutAction(PlayerbotAI* ai) : ReturnPositionResetAction(ai, "solo chat shortcut") {}
+        virtual bool Execute(Event& event) override;
+        virtual bool isUsefulWhenStunned() override { return true; }
+    };
+
     class TankAttackChatShortcutAction : public ReturnPositionResetAction
     {
     public:

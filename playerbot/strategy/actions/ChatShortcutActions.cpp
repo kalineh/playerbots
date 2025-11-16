@@ -201,6 +201,20 @@ bool GrindChatShortcutAction::Execute(Event& event)
     return true;
 }
 
+bool SoloChatShortcutAction::Execute(Event& event)
+{
+    Player* requester = event.getOwner() ? event.getOwner() : GetMaster();
+    if (!requester)
+        return false;
+
+    ai->Reset();
+    ai->ChangeStrategy("+rpg,+travel,+free,-follow,-follow jump,-passive", BotState::BOT_STATE_NON_COMBAT);
+    ai->ChangeStrategy("+grind,+free,-follow,-follow jump,-passive", BotState::BOT_STATE_COMBAT);
+    ResetPosition();
+    ai->TellPlayerNoFacing(requester, "Going solo.");
+    return true;
+}
+
 bool TankAttackChatShortcutAction::Execute(Event& event)
 {
     Player* requester = event.getOwner() ? event.getOwner() : GetMaster();
