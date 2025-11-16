@@ -194,7 +194,8 @@ bool GrindChatShortcutAction::Execute(Event& event)
         return false;
 
     ai->Reset();
-    ai->ChangeStrategy("+grind,-passive", BotState::BOT_STATE_NON_COMBAT);
+    ai->ChangeStrategy("+grind,-passive,-follow,-follow jump", BotState::BOT_STATE_NON_COMBAT);
+    ai->ChangeStrategy("+grind,-passive,-follow,-follow jump", BotState::BOT_STATE_COMBAT);
     ResetPosition();
     ai->TellPlayerNoFacing(requester, BOT_TEXT("grinding"));
     return true;
@@ -239,10 +240,17 @@ bool FriendModeChatShortcutAction::Execute(Event& event)
         return false;
 
     const bool wasFriendMode = ai->IsFriendMode();
-    ai->SetFriendReportRecipient(requester);
+    const std::string param = event.getParam();
+    const bool wantReport = param.find('?') != std::string::npos;
+
+    if (wantReport)
+        ai->SetFriendReportRecipient(requester);
+    else
+        ai->SetFriendReportRecipient(nullptr);
+
     ai->ChangeStrategy("+friend", BotState::BOT_STATE_ALL);
     ai->TellPlayerNoFacing(requester, "Friend mode activated. (v2)");
-    if (wasFriendMode)
+    if (wasFriendMode && wantReport)
     {
         ai->ReportFriendModeStatus(requester);
         ai->SetFriendReportRecipient(nullptr);

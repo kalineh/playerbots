@@ -2276,14 +2276,11 @@ void PlayerbotAI::EnableFriendMode()
         ApplyFriendStrategy(name, BotState::BOT_STATE_NON_COMBAT);
     }
 
-    Player* recipient = nullptr;
     if (!friendReportTarget.IsEmpty())
-        recipient = sObjectAccessor.FindPlayer(friendReportTarget);
-    if (!recipient)
-        recipient = GetMaster();
-
-    if (recipient)
-        ReportFriendModeStatus(recipient, true);
+    {
+        if (Player* recipient = sObjectAccessor.FindPlayer(friendReportTarget))
+            ReportFriendModeStatus(recipient, true);
+    }
 
     friendReportTarget.Clear();
 }
