@@ -1,6 +1,7 @@
 #pragma once
 
 #include "playerbot/strategy/Strategy.h"
+#include <sstream>
 #include "playerbot/PlayerbotAIConfig.h"
 #include "playerbot/ServerFacade.h"
 

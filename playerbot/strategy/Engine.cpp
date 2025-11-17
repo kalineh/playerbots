@@ -155,6 +155,15 @@ bool Engine::DoNextAction(Unit* unit, int depth, bool minimal, bool isStunned)
             std::string actionName = (action ? action->getName() : "unknown");
             if (!event.getSource().empty())
                 actionName += " <" + event.getSource() + ">";
+            bool shouldAnnounce = ai->IsFriendMode() ||
+                ai->HasStrategy("grind", BotState::BOT_STATE_NON_COMBAT) ||
+                ai->HasStrategy("rpg", BotState::BOT_STATE_NON_COMBAT);
+            if (shouldAnnounce && action)
+            {
+                std::ostringstream talk;
+                talk << "Doing " << actionName << " (rel " << std::fixed << std::setprecision(1) << relevance << ")";
+                ai->Say(talk.str(), true);
+            }
             
             auto pmo1 = sPerformanceMonitor.start(PERF_MON_ACTION, actionName, &aiObjectContext->performanceStack);
 
