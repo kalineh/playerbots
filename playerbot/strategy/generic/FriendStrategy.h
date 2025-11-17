@@ -1,6 +1,7 @@
 #pragma once
 
 #include "playerbot/strategy/Strategy.h"
+#include <algorithm>
 #include <sstream>
 #include "playerbot/PlayerbotAIConfig.h"
 #include "playerbot/ServerFacade.h"
@@ -42,6 +43,9 @@ namespace ai
 
             const bool isHealAction = IsHealAction(action);
 
+            const uint8 attackerCount = AI_VALUE(uint8, "possible attack targets count");
+            const float threatBoost = std::min(0.4f, attackerCount * 0.1f);
+
             if (isHealAction)
             {
                 if (!needsHeal)
@@ -49,20 +53,17 @@ namespace ai
 
                 const float missing = 100.0f - healTarget->GetHealthPercent();
                 float bonus = missing / 60.0f;
-                if (bonus > 0.8f)
-                    bonus = 0.8f;
-                if (bonus < 0.0f)
-                    bonus = 0.0f;
-                return 1.0f + bonus;
+                bonus = std::clamp(bonus, 0.0f, 0.8f);
+                return 1.0f + bonus + threatBoost;
             }
 
             float multiplier = 1.0f;
 
             if (needsHeal)
-                multiplier *= 0.6f;
+                multiplier *= std::min(1.0f, 0.6f + threatBoost);
 
             Player* bot = ai->GetBot();
-            if (bot->GetPowerType() == POWER_MANA)
+            if (bot->GetPowerType() == POWER_MANA && attackerCount == 0)
             {
                 const uint32 maxMana = bot->GetMaxPower(POWER_MANA);
                 if (maxMana > 0)
@@ -119,5 +120,12 @@ namespace ai
         {
             ai->FriendStrategyRemoved();
         }
+    };
+
+    class FriendDebugStrategy : public Strategy
+    {
+    public:
+        FriendDebugStrategy(PlayerbotAI* ai) : Strategy(ai) {}
+        std::string getName() override { return "friend debug"; }
     };
 }

@@ -155,15 +155,7 @@ bool Engine::DoNextAction(Unit* unit, int depth, bool minimal, bool isStunned)
             std::string actionName = (action ? action->getName() : "unknown");
             if (!event.getSource().empty())
                 actionName += " <" + event.getSource() + ">";
-            bool shouldAnnounce = ai->IsFriendMode() ||
-                ai->HasStrategy("grind", BotState::BOT_STATE_NON_COMBAT) ||
-                ai->HasStrategy("rpg", BotState::BOT_STATE_NON_COMBAT);
-            if (shouldAnnounce && action)
-            {
-                std::ostringstream talk;
-                talk << "Doing " << actionName << " (rel " << std::fixed << std::setprecision(1) << relevance << ")";
-                ai->Say(talk.str(), true);
-            }
+            const bool shouldAnnounce = ai->HasStrategy("friend debug", state);
             
             auto pmo1 = sPerformanceMonitor.start(PERF_MON_ACTION, actionName, &aiObjectContext->performanceStack);
 
@@ -248,15 +240,21 @@ bool Engine::DoNextAction(Unit* unit, int depth, bool minimal, bool isStunned)
 
                     if (isPossible && relevance)
                     {
-                        auto pmo4 = sPerformanceMonitor.start(PERF_MON_ACTION, "Execute", &aiObjectContext->performanceStack);
-                        actionExecuted = ListenAndExecute(action, event);
-                        pmo4.reset();
+                    auto pmo4 = sPerformanceMonitor.start(PERF_MON_ACTION, "Execute", &aiObjectContext->performanceStack);
+                    actionExecuted = ListenAndExecute(action, event);
+                    pmo4.reset();
 
 #ifdef PLAYERBOT_ELUNA
                         // used by eluna    
                         if (Eluna* e = ai->GetBot()->GetEluna())
                             e->OnActionExecute(ai, action->getName(), actionExecuted);
 #endif
+                        if (shouldAnnounce && actionExecuted && action)
+                        {
+                            std::ostringstream talk;
+                            talk << "Doing " << actionName << " (rel " << std::fixed << std::setprecision(1) << relevance << ")";
+                            ai->Say(talk.str(), true);
+                        }
 
                         if (actionExecuted)
                         {

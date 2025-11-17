@@ -153,6 +153,7 @@ namespace ai
             creators["glyph"] = [](PlayerbotAI* ai) { return new GlyphStrategy(ai); };
             creators["ai chat"] = [](PlayerbotAI* ai) { return new AIChatStrategy(ai); };
             creators["friend"] = [](PlayerbotAI* ai) { return new FriendStrategy(ai); };
+            creators["friend debug"] = [](PlayerbotAI* ai) { return new FriendDebugStrategy(ai); };
 
             // Dungeon Strategies
             creators["dungeon"] = [](PlayerbotAI* ai) { return new DungeonStrategy(ai); };

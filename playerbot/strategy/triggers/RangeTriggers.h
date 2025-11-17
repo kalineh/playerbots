@@ -33,6 +33,9 @@ namespace ai
                 float const combatReach = bot->GetCombinedCombatReach(target, false);
                 float const minDistance = ai->GetRange("spell") + combatReach;
                 float const targetDistance = sServerFacade.GetDistance2d(bot, target) + combatReach;
+                const float meleeThreshold = sPlayerbotAIConfig.meleeDistance + sPlayerbotAIConfig.contactDistance;
+                if (targetDistance <= meleeThreshold)
+                    return false;
 
                 // No need to move if the target is rooted and you can shoot
                 if (!canMove && (targetDistance > minDistance))
