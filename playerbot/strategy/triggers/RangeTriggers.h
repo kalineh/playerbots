@@ -20,7 +20,7 @@ namespace ai
             {
                 if (ai->HasStrategy("follow", BotState::BOT_STATE_COMBAT) || ai->HasStrategy("guard", BotState::BOT_STATE_COMBAT))
                     if(bot->getClass() != CLASS_HUNTER || sServerFacade.GetDistance2d(bot, target) > 5.0f)
-                        return false;                   
+                        return false;
 
                 const bool canMove = !PossibleAttackTargetsValue::HasBreakableCC(target, bot) && !PossibleAttackTargetsValue::HasUnBreakableCC(target, bot);
 
@@ -31,57 +31,19 @@ namespace ai
                 }
 
                 float const combatReach = bot->GetCombinedCombatReach(target, false);
-                float const minDistance = ai->GetRange("spell") + combatReach;
                 float const targetDistance = sServerFacade.GetDistance2d(bot, target) + combatReach;
                 const float meleeThreshold = sPlayerbotAIConfig.meleeDistance + sPlayerbotAIConfig.contactDistance;
-                if (targetDistance <= meleeThreshold)
+                const float fleeThreshold = meleeThreshold + sPlayerbotAIConfig.contactDistance;
+
+                if (targetDistance > fleeThreshold)
                     return false;
 
-                // No need to move if the target is rooted and you can shoot
-                if (!canMove && (targetDistance > minDistance))
+                if (!canMove && targetDistance > meleeThreshold)
                 {
                     return false;
                 }
 
-                bool isBoss = false;
-                bool isRaid = false;
-                bool isVictim = target->GetVictim() && target->GetVictim()->GetObjectGuid() == bot->GetObjectGuid();
-
-                if (target->IsCreature())
-                {
-                    Creature* creature = ai->GetCreature(target->GetObjectGuid());
-                    if (creature)
-                    {
-                        isBoss = creature->IsWorldBoss();
-                    }
-                }
-
-                if (bot->GetMap()->IsRaid())
-                    isRaid = true;
-
-                //if (isBoss || isRaid)
-                //    return sServerFacade.IsDistanceLessThan(targetDistance, (ai->GetRange("spell") + combatReach) / 2);
-
-                float coeff = 0.5f;
-                if (target->IsPlayer())
-                {
-                    if (!isVictim)
-                        coeff = 0.4f;
-                    else
-                        coeff = 0.6f;
-                }
-                else
-                {
-                    if (!isVictim)
-                        coeff = 0.4f;
-                    else
-                        coeff = 0.6f;
-                }
-
-                if (isRaid)
-                    coeff = 0.7f;
-
-                return sServerFacade.IsDistanceLessOrEqualThan(targetDistance, minDistance * coeff);
+                return true;
             }
             return false;
         }

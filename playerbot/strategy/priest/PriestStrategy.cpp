@@ -107,6 +107,14 @@ void PriestStrategy::InitCombatTriggers(std::list<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode(
         "target of attacker",
         NextAction::array(0, new NextAction("power word: shield", ACTION_HIGH), NULL)));
+
+    triggers.push_back(new TriggerNode(
+        "low mana",
+        NextAction::array(0, new NextAction("shoot", ACTION_NORMAL + 1), NULL)));
+
+    triggers.push_back(new TriggerNode(
+        "no mana",
+        NextAction::array(0, new NextAction("shoot", ACTION_NORMAL), NULL)));
 }
 
 void PriestStrategy::InitNonCombatTriggers(std::list<TriggerNode*>& triggers)
@@ -672,6 +680,14 @@ void PriestStrategy::InitCombatTriggers(std::list<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode(
         "target of attacker",
         NextAction::array(0, new NextAction("power word: shield", ACTION_HIGH), NULL)));
+
+    triggers.push_back(new TriggerNode(
+        "low mana",
+        NextAction::array(0, new NextAction("shoot", ACTION_NORMAL + 1), NULL)));
+
+    triggers.push_back(new TriggerNode(
+        "no mana",
+        NextAction::array(0, new NextAction("shoot", ACTION_NORMAL), NULL)));
 }
 
 void PriestStrategy::InitNonCombatTriggers(std::list<TriggerNode*>& triggers)
@@ -1245,6 +1261,14 @@ void PriestStrategy::InitCombatTriggers(std::list<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode(
         "target of attacker",
         NextAction::array(0, new NextAction("power word: shield", ACTION_HIGH), NULL)));
+
+    triggers.push_back(new TriggerNode(
+        "low mana",
+        NextAction::array(0, new NextAction("shoot", ACTION_NORMAL + 1), NULL)));
+
+    triggers.push_back(new TriggerNode(
+        "no mana",
+        NextAction::array(0, new NextAction("shoot", ACTION_NORMAL), NULL)));
 }
 
 void PriestStrategy::InitNonCombatTriggers(std::list<TriggerNode*>& triggers)
