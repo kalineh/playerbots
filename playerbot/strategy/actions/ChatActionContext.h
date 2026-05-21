@@ -156,6 +156,13 @@ namespace ai
             creators["solo chat shortcut"] = [](PlayerbotAI* ai) { return new SoloChatShortcutAction(ai); };
             creators["tank attack chat shortcut"] = [](PlayerbotAI* ai) { return new TankAttackChatShortcutAction(ai); };
             creators["friend chat shortcut"] = [](PlayerbotAI* ai) { return new FriendModeChatShortcutAction(ai); };
+            creators["friend stop chat shortcut"] = [](PlayerbotAI* ai) { return new FriendCommandChatShortcutAction(ai, "friend stop chat shortcut", "stop"); };
+            creators["friend come chat shortcut"] = [](PlayerbotAI* ai) { return new FriendCommandChatShortcutAction(ai, "friend come chat shortcut", "come"); };
+            creators["friend normal chat shortcut"] = [](PlayerbotAI* ai) { return new FriendCommandChatShortcutAction(ai, "friend normal chat shortcut", "normal"); };
+            creators["friend report chat shortcut"] = [](PlayerbotAI* ai) { return new FriendCommandChatShortcutAction(ai, "friend report chat shortcut", "report"); };
+            creators["friend intent chat shortcut"] = [](PlayerbotAI* ai) { return new FriendCommandChatShortcutAction(ai, "friend intent chat shortcut", "intent"); };
+            creators["friend debug chat shortcut"] = [](PlayerbotAI* ai) { return new FriendCommandChatShortcutAction(ai, "friend debug chat shortcut", "debug"); };
+            creators["friend silent chat shortcut"] = [](PlayerbotAI* ai) { return new FriendCommandChatShortcutAction(ai, "friend silent chat shortcut", "silent"); };
             creators["strict chat shortcut"] = [](PlayerbotAI* ai) { return new StrictModeChatShortcutAction(ai); };
             creators["gossip hello"] = [](PlayerbotAI* ai) { return new GossipHelloAction(ai); };
             creators["cast"] = [](PlayerbotAI* ai) { return new CastCustomSpellAction(ai); };

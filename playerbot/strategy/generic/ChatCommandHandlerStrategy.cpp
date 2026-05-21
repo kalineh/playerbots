@@ -280,6 +280,38 @@ void ChatCommandHandlerStrategy::InitReactionTriggers(std::list<TriggerNode*> &t
         NextAction::array(0, new NextAction("friend chat shortcut", relevance), NULL)));
 
     triggers.push_back(new TriggerNode(
+        "stop",
+        NextAction::array(0, new NextAction("friend stop chat shortcut", relevance), NULL)));
+
+    triggers.push_back(new TriggerNode(
+        "come",
+        NextAction::array(0, new NextAction("friend come chat shortcut", relevance), NULL)));
+
+    triggers.push_back(new TriggerNode(
+        "normal",
+        NextAction::array(0, new NextAction("friend normal chat shortcut", relevance), NULL)));
+
+    triggers.push_back(new TriggerNode(
+        "report",
+        NextAction::array(0, new NextAction("friend report chat shortcut", relevance), NULL)));
+
+    triggers.push_back(new TriggerNode(
+        "intent",
+        NextAction::array(0, new NextAction("friend intent chat shortcut", relevance), NULL)));
+
+    triggers.push_back(new TriggerNode(
+        "verbose",
+        NextAction::array(0, new NextAction("friend intent chat shortcut", relevance), NULL)));
+
+    triggers.push_back(new TriggerNode(
+        "friend debug",
+        NextAction::array(0, new NextAction("friend debug chat shortcut", relevance), NULL)));
+
+    triggers.push_back(new TriggerNode(
+        "friend silent",
+        NextAction::array(0, new NextAction("friend silent chat shortcut", relevance), NULL)));
+
+    triggers.push_back(new TriggerNode(
         "strict",
         NextAction::array(0, new NextAction("strict chat shortcut", relevance), NULL)));
 

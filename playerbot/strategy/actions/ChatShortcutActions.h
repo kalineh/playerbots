@@ -103,6 +103,17 @@ namespace ai
         bool isUsefulWhenStunned() override { return true; }
     };
 
+    class FriendCommandChatShortcutAction : public ChatCommandAction
+    {
+    public:
+        FriendCommandChatShortcutAction(PlayerbotAI* ai, std::string name, std::string command) : ChatCommandAction(ai, name), command(command) {}
+        bool Execute(Event& event) override;
+        bool isUsefulWhenStunned() override { return true; }
+
+    private:
+        std::string command;
+    };
+
     class StrictModeChatShortcutAction : public ChatCommandAction
     {
     public:

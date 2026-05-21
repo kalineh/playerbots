@@ -5,7 +5,25 @@
 #include "playerbot/strategy/values/PositionValue.h"
 #include "playerbot/strategy/values/Formations.h"
 
+#include <algorithm>
+#include <cctype>
+
 using namespace ai;
+
+namespace
+{
+    std::string NormalizeFriendCommand(std::string text)
+    {
+        while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front())))
+            text.erase(text.begin());
+
+        while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back())))
+            text.pop_back();
+
+        std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return text;
+    }
+}
 
 void ReturnPositionResetAction::ResetPosition(std::string posName)
 {
@@ -253,23 +271,39 @@ bool FriendModeChatShortcutAction::Execute(Event& event)
     if (!requester)
         return false;
 
-    const bool wasFriendMode = ai->IsFriendMode();
-    const std::string param = event.getParam();
+    const std::string param = NormalizeFriendCommand(event.getParam());
     const bool wantReport = param.find('?') != std::string::npos;
 
-    if (wantReport)
-        ai->SetFriendReportRecipient(requester);
-    else
-        ai->SetFriendReportRecipient(nullptr);
+    ai->EnableFriendMode();
+    std::string response;
+    if (!param.empty() && param != "?")
+    {
+        ai->HandleFriendCommand(param, requester, response);
+    }
 
-    ai->ChangeStrategy("+friend", BotState::BOT_STATE_ALL);
-    ai->TellPlayerNoFacing(requester, "Friend mode activated. (v2)");
-    if (wasFriendMode && wantReport)
+    ai->TellPlayerNoFacing(requester, response.empty() ? "Friend mode activated." : response);
+    if (wantReport)
     {
         ai->ReportFriendModeStatus(requester);
-        ai->SetFriendReportRecipient(nullptr);
     }
     return true;
+}
+
+bool FriendCommandChatShortcutAction::Execute(Event& event)
+{
+    Player* requester = event.getOwner() ? event.getOwner() : GetMaster();
+    if (!requester)
+        return false;
+
+    if (!ai->IsFriendMode())
+        ai->EnableFriendMode();
+
+    std::string response;
+    const bool handled = ai->HandleFriendCommand(command, requester, response);
+    if (!response.empty())
+        ai->TellPlayerNoFacing(requester, response);
+
+    return handled;
 }
 
 bool StrictModeChatShortcutAction::Execute(Event& event)
@@ -278,7 +312,7 @@ bool StrictModeChatShortcutAction::Execute(Event& event)
     if (!requester)
         return false;
 
-    ai->ChangeStrategy("-friend", BotState::BOT_STATE_ALL);
+    ai->DisableFriendMode();
     ai->TellPlayerNoFacing(requester, "Strict mode restored.");
     return true;
 }

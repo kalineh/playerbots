@@ -510,13 +510,10 @@ void Engine::addStrategy(const std::string& name)
     Strategy* strategy = aiObjectContext->GetStrategy(name);
     if (strategy)
     {
-        if (!ai->IsFriendMode())
+        std::set<std::string> siblings = aiObjectContext->GetSiblingStrategy(name);
+        for (std::set<std::string>::iterator i = siblings.begin(); i != siblings.end(); i++)
         {
-            std::set<std::string> siblings = aiObjectContext->GetSiblingStrategy(name);
-            for (std::set<std::string>::iterator i = siblings.begin(); i != siblings.end(); i++)
-            {
-                removeStrategy(*i, initMode);
-            }
+            removeStrategy(*i, initMode);
         }
 
         LogAction("S:+%s", strategy->getName().c_str());
