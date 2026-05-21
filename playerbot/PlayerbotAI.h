@@ -10,7 +10,6 @@
 #include "BotState.h"
 #include "PlayerTalentSpec.h"
 #include <stack>
-#include <array>
 #include <set>
 #include "strategy/IterateItemsMask.h"
 #include "RandomPlayerbotMgr.h"
@@ -64,6 +63,7 @@ public:
 
 namespace ai
 {
+    class FriendBotController;
     class WorldPosition;
     class GuidPosition;
     class IterateItemsVisitor;
@@ -399,10 +399,11 @@ public:
     void ResetStrategies(bool autoLoad = true);
     void ReInitCurrentEngine();
     void Reset(bool full = false);
-    void FriendStrategyAdded();
-    void FriendStrategyRemoved();
     bool IsFriendMode() const { return friendModeEnabled; }
-    void SetFriendReportRecipient(Player* player);
+    void EnableFriendMode();
+    void DisableFriendMode();
+    ai::FriendBotController* GetFriendBotController() { return friendController; }
+    bool HandleFriendCommand(const std::string& command, Player* requester, std::string& response);
     void ReportFriendModeStatus(Player* recipient, bool includeSkipped = true);
     bool IsTank(Player* player, bool inGroup = true);
     bool IsHeal(Player* player, bool inGroup = true);
@@ -687,10 +688,6 @@ public:
 private:
     bool UpdateAIReaction(uint32 elapsed, bool minimal, bool isStunned);
     void UpdateFaceTarget(uint32 elapsed, bool minimal);
-    void EnableFriendMode();
-    void DisableFriendMode();
-    void ApplyFriendStrategy(const std::string& name, BotState state);
-    bool IsFriendCandidateStrategy(Strategy* strategy) const;
 
 protected:
 	Player* bot;
@@ -726,9 +723,7 @@ protected:
     bool isMovingToTransport = false;
     bool shouldLogOut = false;
     bool friendModeEnabled = false;
-    ObjectGuid friendReportTarget;
-    uint8 friendStrategyRefCount = 0;
-    std::array<std::set<std::string>, static_cast<size_t>(BotState::BOT_STATE_ALL)> friendStrategies;
+    ai::FriendBotController* friendController = nullptr;
 
 #ifdef BUILD_ELUNA
     MaNGOS::unique_weak_ptr<PlayerbotAI> m_weakRef;

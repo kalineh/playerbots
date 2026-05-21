@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "playerbot/AiFactory.h"
+#include "playerbot/FriendBotController.h"
 
 #include "MotionGenerators/MovementGenerator.h"
 #include "Grids/GridNotifiers.h"
@@ -44,7 +45,6 @@
 #include "Guilds/GuildMgr.h"
 #include "Chat/ChannelMgr.h"
 #include "PlayerbotLLMInterface.h"
-#include "playerbot/strategy/generic/ClassStrategy.h"
 
 #include <boost/algorithm/string.hpp>
 
@@ -116,6 +116,8 @@ void PacketHandlingHelper::AddPacket(const WorldPacket& packet)
 PlayerbotAI::PlayerbotAI() : PlayerbotAIBase(), bot(NULL), aiObjectContext(NULL),
     currentEngine(NULL), chatHelper(this), chatFilter(this), accountId(0), security(NULL), master(NULL), currentState(BotState::BOT_STATE_NON_COMBAT), faceTargetUpdateDelay(0), jumpTime(0), fallAfterJump(false)
 {
+    friendController = new FriendBotController(this);
+
     for (uint8 i = 0 ; i < (uint8)BotState::BOT_STATE_ALL; i++)
         engines[i] = NULL;
 
@@ -129,6 +131,8 @@ PlayerbotAI::PlayerbotAI() : PlayerbotAIBase(), bot(NULL), aiObjectContext(NULL)
 PlayerbotAI::PlayerbotAI(Player* bot) :
     PlayerbotAIBase(), chatHelper(this), chatFilter(this), security(bot), master(NULL), faceTargetUpdateDelay(0), jumpTime(0), fallAfterJump(false)
 {
+    friendController = new FriendBotController(this);
+
     this->bot = bot;
     if (!bot->isTaxiCheater() && HasCheat(BotCheatMask::taxi))
         bot->SetTaxiCheater(true);
@@ -242,6 +246,9 @@ PlayerbotAI::PlayerbotAI(Player* bot) :
 
 PlayerbotAI::~PlayerbotAI()
 {
+    if (friendController)
+        delete friendController;
+
     for (uint8 i = 0 ; i < (uint8)BotState::BOT_STATE_ALL; i++)
     {
         if (engines[i])
@@ -1942,7 +1949,10 @@ void PlayerbotAI::DoNextAction(bool min)
 
     bool minimal = !AllowActivity();
 
-    currentEngine->DoNextAction(NULL, 0, (minimal || min), bot->IsTaxiFlying());
+    if (friendModeEnabled && friendController)
+        friendController->RunTick(minimal || min);
+    else
+        currentEngine->DoNextAction(NULL, 0, (minimal || min), bot->IsTaxiFlying());
 
     if (!bot->IsInWorld()) //Teleport out of bg
         return;
@@ -2160,95 +2170,21 @@ void PlayerbotAI::ChangeStrategy(const std::string& names, BotState type)
     }
 }
 
-void PlayerbotAI::FriendStrategyAdded()
+bool PlayerbotAI::HandleFriendCommand(const std::string& command, Player* requester, std::string& response)
 {
-    if (friendStrategyRefCount++ == 0)
-        EnableFriendMode();
-}
+    if (!friendController)
+        return false;
 
-void PlayerbotAI::FriendStrategyRemoved()
-{
-    if (!friendStrategyRefCount)
-        return;
-
-    friendStrategyRefCount--;
-    if (!friendStrategyRefCount)
-        DisableFriendMode();
-}
-
-void PlayerbotAI::SetFriendReportRecipient(Player* player)
-{
-    if (player)
-        friendReportTarget = player->GetObjectGuid();
-    else
-        friendReportTarget.Clear();
-}
-
-namespace
-{
-    constexpr size_t FRIEND_REPORT_CHUNK = 10;
-
-    void SendFriendReport(PlayerbotAI* ai, Player* recipient, const std::string& prefix, const std::vector<std::string>& entries)
-    {
-        if (!recipient)
-            return;
-
-        std::ostringstream countLine;
-        countLine << "[Friend] " << prefix << " " << entries.size() << " strategies";
-        ai->TellPlayerNoFacing(recipient, countLine, PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
-
-        for (size_t i = 0; i < entries.size(); i += FRIEND_REPORT_CHUNK)
-        {
-            std::ostringstream chunk;
-            chunk << "[Friend] " << prefix << ": ";
-            for (size_t j = i; j < std::min(entries.size(), i + FRIEND_REPORT_CHUNK); ++j)
-            {
-                if (j > i)
-                    chunk << ", ";
-                chunk << entries[j];
-            }
-            ai->TellPlayerNoFacing(recipient, chunk, PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
-        }
-    }
+    return friendController->HandleCommand(command, requester, response);
 }
 
 void PlayerbotAI::ReportFriendModeStatus(Player* recipient, bool includeSkipped)
 {
-    if (!recipient)
-        return;
-
-    std::set<std::string> supported = aiObjectContext->GetSupportedStrategies();
-    std::vector<std::string> applied;
-    std::vector<std::string> skipped;
-
-    for (const std::string& name : supported)
+    (void)includeSkipped;
+    if (friendController)
     {
-        if (name.empty() || name == "friend")
-            continue;
-
-        Strategy* strategy = aiObjectContext->GetStrategy(name);
-        if (!IsFriendCandidateStrategy(strategy))
-            continue;
-
-        const bool hasInCombat = HasStrategy(name, BotState::BOT_STATE_COMBAT);
-        const bool hasOutCombat = HasStrategy(name, BotState::BOT_STATE_NON_COMBAT);
-        if (hasInCombat || hasOutCombat)
-        {
-            applied.push_back(name);
-        }
-        else if (includeSkipped)
-        {
-            skipped.push_back(name);
-        }
+        friendController->Report(recipient);
     }
-
-    std::sort(applied.begin(), applied.end());
-    std::sort(skipped.begin(), skipped.end());
-
-    SendFriendReport(this, recipient, "applied", applied);
-
-    if (includeSkipped)
-        SendFriendReport(this, recipient, "skipped", skipped);
 }
 
 void PlayerbotAI::EnableFriendMode()
@@ -2257,30 +2193,9 @@ void PlayerbotAI::EnableFriendMode()
         return;
 
     friendModeEnabled = true;
-    for (auto& entry : friendStrategies)
-        entry.clear();
 
-    std::set<std::string> supported = aiObjectContext->GetSupportedStrategies();
-    for (const std::string& name : supported)
-    {
-        if (name.empty() || name == "friend")
-            continue;
-
-        Strategy* strategy = aiObjectContext->GetStrategy(name);
-        if (!IsFriendCandidateStrategy(strategy))
-            continue;
-
-        ApplyFriendStrategy(name, BotState::BOT_STATE_COMBAT);
-        ApplyFriendStrategy(name, BotState::BOT_STATE_NON_COMBAT);
-    }
-
-    if (!friendReportTarget.IsEmpty())
-    {
-        if (Player* recipient = sObjectAccessor.FindPlayer(friendReportTarget))
-            ReportFriendModeStatus(recipient, true);
-    }
-
-    friendReportTarget.Clear();
+    if (friendController)
+        friendController->OnFriendModeEnabled();
 }
 
 void PlayerbotAI::DisableFriendMode()
@@ -2288,70 +2203,9 @@ void PlayerbotAI::DisableFriendMode()
     if (!friendModeEnabled)
         return;
 
-    for (uint8 i = 0; i < (uint8)BotState::BOT_STATE_ALL; ++i)
-    {
-        BotState state = static_cast<BotState>(i);
-        std::set<std::string>& applied = friendStrategies[i];
-        for (const std::string& name : applied)
-        {
-            if (HasStrategy(name, state))
-            {
-                std::ostringstream out;
-                out << "-" << name;
-                ChangeStrategy(out.str(), state);
-            }
-        }
-        applied.clear();
-    }
-
     friendModeEnabled = false;
-}
-
-void PlayerbotAI::ApplyFriendStrategy(const std::string& name, BotState state)
-{
-    size_t index = static_cast<size_t>(state);
-    if (index >= friendStrategies.size())
-        return;
-
-    if (HasStrategy(name, state))
-        return;
-
-    std::ostringstream change;
-    change << "+" << name;
-    ChangeStrategy(change.str(), state);
-    friendStrategies[index].insert(name);
-}
-
-bool PlayerbotAI::IsFriendCandidateStrategy(Strategy* strategy) const
-{
-    if (!strategy)
-        return false;
-
-    if (dynamic_cast<SpecPlaceholderStrategy*>(strategy))
-        return true;
-
-    if (dynamic_cast<AoePlaceholderStrategy*>(strategy) ||
-        dynamic_cast<BuffPlaceholderStrategy*>(strategy) ||
-        dynamic_cast<BoostPlaceholderStrategy*>(strategy) ||
-        dynamic_cast<CcPlaceholderStrategy*>(strategy) ||
-        dynamic_cast<CurePlaceholderStrategy*>(strategy) ||
-        dynamic_cast<OffhealPlaceholderStrategy*>(strategy) ||
-        dynamic_cast<OffdpsPlaceholderStrategy*>(strategy) ||
-        dynamic_cast<StealthPlaceholderStrategy*>(strategy))
-        return true;
-
-    if (dynamic_cast<PlaceholderStrategy*>(strategy))
-        return false;
-
-    return dynamic_cast<ClassStrategy*>(strategy) ||
-           dynamic_cast<AoeStrategy*>(strategy) ||
-           dynamic_cast<BuffStrategy*>(strategy) ||
-           dynamic_cast<BoostStrategy*>(strategy) ||
-           dynamic_cast<CcStrategy*>(strategy) ||
-           dynamic_cast<CureStrategy*>(strategy) ||
-           dynamic_cast<OffhealStrategy*>(strategy) ||
-           dynamic_cast<OffdpsStrategy*>(strategy) ||
-           dynamic_cast<StealthStrategy*>(strategy);
+    if (friendController)
+        friendController->OnFriendModeDisabled();
 }
 
 void PlayerbotAI::PrintStrategies(Player* requester, BotState type)

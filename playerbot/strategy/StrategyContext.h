@@ -43,7 +43,6 @@
 #include "generic/GuildStrategy.h"
 #include "generic/FocusTargetStrategy.h"
 #include "generic/AvoidMobsStrategy.h"
-#include "generic/FriendStrategy.h"
 
 #include "generic/DungeonStrategy.h"
 #include "generic/OnyxiasLairDungeonStrategies.h"
@@ -152,10 +151,15 @@ namespace ai
             creators["nowar"] = [](PlayerbotAI* ai) { return new NoWarStrategy(ai); };
             creators["glyph"] = [](PlayerbotAI* ai) { return new GlyphStrategy(ai); };
             creators["ai chat"] = [](PlayerbotAI* ai) { return new AIChatStrategy(ai); };
+<<<<<<< HEAD
             creators["friend"] = [](PlayerbotAI* ai) { return new FriendStrategy(ai); };
             creators["friend debug"] = [](PlayerbotAI* ai) { return new FriendDebugStrategy(ai); };
 
             // Dungeon Strategies
+=======
+
+            // Dungeon Strategies
+>>>>>>> 8170c8e09ffe08c56c84d4e21c4563d53dfa3675
             creators["dungeon"] = [](PlayerbotAI* ai) { return new DungeonStrategy(ai); };
             creators["onyxia's lair"] = [](PlayerbotAI* ai) { return new OnyxiasLairDungeonStrategy(ai); };
             creators["molten core"] = [](PlayerbotAI* ai) { return new MoltenCoreDungeonStrategy(ai); };

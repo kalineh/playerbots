@@ -89,6 +89,14 @@ namespace ai
             creators["grind"] = [](PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "grind"); };
             creators["solo"] = [](PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "solo"); };
             creators["friend"] = [](PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "friend"); };
+            creators["stop"] = [](PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "stop"); };
+            creators["come"] = [](PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "come"); };
+            creators["normal"] = [](PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "normal"); };
+            creators["report"] = [](PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "report"); };
+            creators["intent"] = [](PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "intent"); };
+            creators["verbose"] = [](PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "verbose"); };
+            creators["friend debug"] = [](PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "friend debug"); };
+            creators["friend silent"] = [](PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "friend silent"); };
             creators["strict"] = [](PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "strict"); };
             creators["tank attack"] = [](PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "tank attack"); };
             creators["talk"] = [](PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "talk"); };

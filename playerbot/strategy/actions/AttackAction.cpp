@@ -33,6 +33,11 @@ bool AttackMyTargetAction::Execute(Event& event)
             if (Attack(requester, ai->GetUnit(guid)))
             {
                 SET_AI_VALUE(ObjectGuid, "attack target", guid);
+                if (ai->IsFriendMode())
+                {
+                    std::string response;
+                    ai->HandleFriendCommand("attack", requester, response);
+                }
                 return true;
             }
         }
