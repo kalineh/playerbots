@@ -3828,7 +3828,7 @@ Aura* PlayerbotAI::GetAura(uint32 spellId, Unit* unit, bool checkIsOwner)
             {
                 if (checkIsOwner)
                 {
-                    if (aura->GetHolder() && aura->GetHolder()->GetCasterGuid() == bot->GetObjectGuid())
+                    if (auraTmp->GetHolder() && auraTmp->GetHolder()->GetCasterGuid() == bot->GetObjectGuid())
                     {
                         aura = auraTmp;
                         break;
