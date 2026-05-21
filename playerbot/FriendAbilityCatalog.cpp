@@ -226,6 +226,8 @@ namespace
                     case SPELL_AURA_MOD_CHARM:
                     case SPELL_AURA_MOD_STUN:
                     case SPELL_AURA_MOD_ROOT:
+                        flags |= FRIEND_ABILITY_ROOT;
+                        [[fallthrough]];
                     case SPELL_AURA_MOD_PACIFY:
                     case SPELL_AURA_MOD_SILENCE:
                     case SPELL_AURA_MOD_PACIFY_SILENCE:
@@ -331,6 +333,9 @@ void FriendAbilityCatalog::Refresh(PlayerbotAI* ai)
         ability.spellId = spellId;
         ability.name = rawName;
         ability.lowerName = ToLower(ability.name);
+        ability.powerType = spellInfo->powerType;
+        ability.manaCost = spellInfo->manaCost;
+        ability.manaCostPercent = spellInfo->ManaCostPercentage;
         ability.flags = ClassifyAbility(spellInfo, ability.lowerName, ability.dispelType);
         FillRange(spellInfo, ability);
 

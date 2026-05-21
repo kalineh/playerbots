@@ -32,7 +32,8 @@ namespace ai
         FRIEND_ABILITY_AURA = 0x00040000,
         FRIEND_ABILITY_THREAT = 0x00080000,
         FRIEND_ABILITY_MOVEMENT = 0x00100000,
-        FRIEND_ABILITY_DAMAGE_COOLDOWN = 0x00200000
+        FRIEND_ABILITY_DAMAGE_COOLDOWN = 0x00200000,
+        FRIEND_ABILITY_ROOT = 0x00400000
     };
 
     struct FriendAbility
@@ -44,8 +45,12 @@ namespace ai
         uint32 dispelType = 0;
         float minRange = 0.0f;
         float maxRange = 0.0f;
+        uint32 powerType = 0;
+        uint32 manaCost = 0;
+        uint32 manaCostPercent = 0;
 
         bool Has(uint32 flag) const { return (flags & flag) != 0; }
+        bool UsesMana() const { return powerType == POWER_MANA && (manaCost > 0 || manaCostPercent > 0); }
     };
 
     class FriendAbilityCatalog

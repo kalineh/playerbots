@@ -85,7 +85,9 @@ namespace ai
         uint8 balance = 100;
         float leaderDistance = 0.0f;
         float targetDistance = 0.0f;
+        float nearestHostileDistance = 0.0f;
         ObjectGuid leaderGuid;
+        ObjectGuid nearestHostileGuid;
     };
 
     class FriendBotController
@@ -118,12 +120,19 @@ namespace ai
         bool TryCatalogCrowdControl(const FriendSituation& situation, const std::string& source);
         bool TryCastAbility(const FriendAbility& ability, Unit* target, const std::string& source);
         bool TryReachAbilityTarget(const FriendAbility& ability, Unit* target, const std::string& source);
+        bool TryFreeDamage(const FriendSituation& situation, const std::string& source);
+        bool TryDruidCombatForm(const FriendSituation& situation, const std::string& source);
         bool MoveToDamageTarget(const FriendSituation& situation, const std::string& action);
         bool PrefersMeleeDamage(const FriendSituation& situation) const;
+        bool ShouldConserveDamageMana(const FriendSituation& situation) const;
+        bool IsLowPressureFight(const FriendSituation& situation) const;
+        int32 ManaSpendScorePenalty(const FriendSituation& situation, const FriendAbility& ability) const;
+        bool ShouldUseLegacySupportActions(const FriendSituation& situation) const;
         Unit* GetDamageTarget(const FriendSituation& situation, bool prepare);
         Unit* GetHealTarget(const FriendSituation& situation) const;
         std::vector<Unit*> GetPartyTargets() const;
         bool ExecuteLoot(const FriendSituation& situation);
+        bool MoveToRecoverPosition(const FriendSituation& situation);
         bool PreferFreeDamage(const FriendSituation& situation) const;
         bool IsTargetSetupAction(const std::string& name) const;
         float PreferredLeaderDistance(const FriendSituation& situation) const;
