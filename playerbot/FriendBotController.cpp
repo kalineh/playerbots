@@ -91,6 +91,13 @@ void FriendBotController::RunTick(bool minimal)
     if (!ai || !ai->GetBot())
         return;
 
+    if (!sServerFacade.IsAlive(ai->GetBot()))
+    {
+        SetResult(FriendIntent::FollowOrIdle, "", FriendExecutionResult::IntentionalIdle);
+        ai->SetActionDuration(minimal ? sPlayerbotAIConfig.reactDelay : sPlayerbotAIConfig.globalCoolDown);
+        return;
+    }
+
     FriendSituation situation = BuildSituation();
     lastSituation = situation;
     ResetTemporaryAssignmentIfSatisfied(situation);
@@ -437,6 +444,10 @@ FriendExecutionResult FriendBotController::TryAction(const std::string& name, co
         return FriendExecutionResult::BlockedNoAction;
     }
 
+    action->SetReaction(false);
+    action->setRelevance(ACTION_NORMAL);
+    action->MakeVerbose(false);
+
     if (!action->isUseful())
     {
         SetResult(lastIntent, name, FriendExecutionResult::BlockedNotUseful);
@@ -452,7 +463,7 @@ FriendExecutionResult FriendBotController::TryAction(const std::string& name, co
         return FriendExecutionResult::BlockedNotPossible;
     }
 
-    Event event(source);
+    Event event(source, "", ai->GetMaster());
     bool executed = action->Execute(event);
     FriendExecutionResult result = executed ? FriendExecutionResult::Done : FriendExecutionResult::Failed;
     if (executed)
