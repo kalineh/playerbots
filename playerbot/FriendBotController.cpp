@@ -23,6 +23,8 @@ namespace
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
     const float FRIEND_RECOVER_COMFORT_DISTANCE = 24.0f;
+    const uint8 FRIEND_REST_DONE_HEALTH = 95;
+    const uint8 FRIEND_REST_DONE_MANA = 90;
 
     void AddActions(std::vector<std::string>& actions, std::initializer_list<const char*> names)
     {
@@ -83,6 +85,13 @@ namespace
         auto value = context->GetValue<T>(name);
         return value ? value->Get() : fallback;
     }
+
+    bool IsMovingForAction(PlayerbotAI* ai, const std::string& lastAction, const std::string& action)
+    {
+        return ai && ai->GetBot() && ai->GetBot()->GetMotionMaster() &&
+            lastAction == action &&
+            ai->GetBot()->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE;
+    }
 }
 
 FriendBotController::FriendBotController(PlayerbotAI* ai) : ai(ai)
@@ -91,6 +100,7 @@ FriendBotController::FriendBotController(PlayerbotAI* ai) : ai(ai)
 
 void FriendBotController::Reset()
 {
+    mode = FriendMode::Party;
     assignment = FriendAssignment::ParticipateWithParty;
     verbosity = FriendVerbosity::Silent;
     lastIntent = FriendIntent::FollowOrIdle;
@@ -104,6 +114,12 @@ void FriendBotController::Reset()
     lastLowestPartyHealth = 100;
     lastStatusLine.clear();
     manualAttackUntil = 0;
+    manualHealUntil = 0;
+    manualBuffUntil = 0;
+    manualHealGuid = ObjectGuid();
+    idleGoal = FriendIdleGoal::None;
+    idleGoalUntil = 0;
+    idleNextActionAt = 0;
     abilityCatalog.Reset();
 }
 
@@ -151,9 +167,49 @@ bool FriendBotController::HandleCommand(const std::string& command, Player* requ
     std::string cmd = command;
     std::transform(cmd.begin(), cmd.end(), cmd.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
+    auto clearTemporaryState = [&]()
+    {
+        assignment = FriendAssignment::ParticipateWithParty;
+        manualAttackUntil = 0;
+        manualHealUntil = 0;
+        manualBuffUntil = 0;
+        manualHealGuid = ObjectGuid();
+        idleGoal = FriendIdleGoal::None;
+        idleGoalUntil = 0;
+        idleNextActionAt = 0;
+    };
+
+    if (cmd == "party" || cmd == "normal" || cmd == "reset" || cmd == "act normal")
+    {
+        mode = FriendMode::Party;
+        verbosity = FriendVerbosity::Silent;
+        clearTemporaryState();
+        response = "Party mode.";
+        return true;
+    }
+
+    if (cmd == "dungeon")
+    {
+        mode = FriendMode::Dungeon;
+        clearTemporaryState();
+        response = "Dungeon mode.";
+        return true;
+    }
+
+    if (cmd == "solo")
+    {
+        mode = FriendMode::Solo;
+        clearTemporaryState();
+        response = "Solo mode.";
+        return true;
+    }
+
     if (cmd == "stop" || cmd == "hold" || cmd == "dont move" || cmd == "don't move")
     {
         assignment = FriendAssignment::HoldPosition;
+        idleGoal = FriendIdleGoal::None;
+        idleGoalUntil = 0;
+        idleNextActionAt = 0;
         if (ai)
             ai->StopMoving();
         response = "Holding position.";
@@ -163,30 +219,30 @@ bool FriendBotController::HandleCommand(const std::string& command, Player* requ
     if (cmd == "come" || cmd == "come here" || cmd == "return")
     {
         assignment = FriendAssignment::ReturnToParty;
+        idleGoal = FriendIdleGoal::None;
+        idleGoalUntil = 0;
+        idleNextActionAt = 0;
         response = "Coming back.";
-        return true;
-    }
-
-    if (cmd == "normal" || cmd == "reset" || cmd == "act normal")
-    {
-        assignment = FriendAssignment::ParticipateWithParty;
-        verbosity = FriendVerbosity::Silent;
-        manualAttackUntil = 0;
-        response = "Acting normal.";
         return true;
     }
 
     if (cmd == "stay close" || cmd == "close")
     {
         assignment = FriendAssignment::StayClose;
+        idleGoal = FriendIdleGoal::None;
+        idleGoalUntil = 0;
+        idleNextActionAt = 0;
         response = "Staying close.";
         return true;
     }
 
-    if (cmd == "recover" || cmd == "drink")
+    if (cmd == "recover" || cmd == "drink" || cmd == "rest" || cmd == "rest up")
     {
         assignment = FriendAssignment::Recover;
-        response = "Recovering.";
+        idleGoal = FriendIdleGoal::None;
+        idleGoalUntil = 0;
+        idleNextActionAt = 0;
+        response = "Resting up.";
         return true;
     }
 
@@ -194,9 +250,35 @@ bool FriendBotController::HandleCommand(const std::string& command, Player* requ
     {
         assignment = FriendAssignment::ParticipateWithParty;
         manualAttackUntil = time(nullptr) + 20;
+        idleGoal = FriendIdleGoal::None;
+        idleGoalUntil = 0;
+        idleNextActionAt = 0;
         if (requester && requester->GetSelectionGuid() && ai && ai->GetAiObjectContext())
             ai->GetAiObjectContext()->GetValue<ObjectGuid>("attack target")->Set(requester->GetSelectionGuid());
         response = "Attacking with you.";
+        return true;
+    }
+
+    if (cmd == "heal" || cmd == "heal me")
+    {
+        assignment = FriendAssignment::ParticipateWithParty;
+        manualHealUntil = time(nullptr) + 20;
+        manualHealGuid = requester ? requester->GetObjectGuid() : ObjectGuid();
+        idleGoal = FriendIdleGoal::None;
+        idleGoalUntil = 0;
+        idleNextActionAt = 0;
+        response = "Healing.";
+        return true;
+    }
+
+    if (cmd == "buff" || cmd == "buff me")
+    {
+        assignment = FriendAssignment::ParticipateWithParty;
+        manualBuffUntil = time(nullptr) + 30;
+        idleGoal = FriendIdleGoal::None;
+        idleGoalUntil = 0;
+        idleNextActionAt = 0;
+        response = "Buffing.";
         return true;
     }
 
@@ -250,7 +332,9 @@ void FriendBotController::Report(Player* requester) const
 std::string FriendBotController::FormatReport() const
 {
     std::ostringstream out;
-    out << "friend: assignment=" << AssignmentName(assignment);
+    out << "friend: mode=" << ModeName(mode);
+    out << ", assignment=" << AssignmentName(assignment);
+    out << ", idle=" << IdleGoalName(idleGoal);
     out << ", verbosity=" << VerbosityName(verbosity);
     out << ", intent=" << IntentName(lastIntent);
     out << ", action=" << (lastAction.empty() ? "none" : lastAction);
@@ -387,6 +471,8 @@ FriendSituation FriendBotController::BuildSituation()
 
 FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation) const
 {
+    const time_t now = time(nullptr);
+
     if (assignment == FriendAssignment::HoldPosition)
         return FriendIntent::HoldPosition;
 
@@ -407,6 +493,9 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
         (situation.botHealth < sPlayerbotAIConfig.mediumHealth && situation.botHealthDelta < -5))
         return FriendIntent::SaveSelf;
 
+    if (manualHealUntil > now)
+        return FriendIntent::SavePartyMember;
+
     if (situation.lowestPartyHealth < sPlayerbotAIConfig.lowHealth ||
         situation.lowestPartyHealthDelta <= -12 ||
         (situation.lowestPartyHealth < sPlayerbotAIConfig.mediumHealth && situation.damagedPartyMembers))
@@ -424,6 +513,9 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
     if (!situation.inCombat && situation.botMana < sPlayerbotAIConfig.lowMana && !situation.leaderInCombat)
         return FriendIntent::RecoverResources;
 
+    if (manualBuffUntil > now && !situation.inCombat && !situation.partyInCombat)
+        return FriendIntent::BuffOrCureParty;
+
     if (situation.inCombat && situation.inDungeon && situation.possibleTargetsCount > 1 && !situation.tankish)
         return FriendIntent::CrowdControl;
 
@@ -434,13 +526,13 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
         situation.leaderSafe && situation.leaderDistance <= SoftLeashDistance(situation))
         return FriendIntent::LootNearby;
 
-    if (!situation.inDungeon && !situation.inCombat && !situation.partyInCombat &&
+    if (mode != FriendMode::Dungeon && !situation.inDungeon && !situation.inCombat && !situation.partyInCombat &&
         situation.leaderSafe && situation.leaderDistance <= sPlayerbotAIConfig.reactDistance &&
         situation.nearbyPartyMembers >= 2 && situation.possibleTargetsCount > 0 && situation.possibleTargetsCount <= 2 &&
         situation.botHealth >= sPlayerbotAIConfig.mediumHealth && situation.botMana >= sPlayerbotAIConfig.mediumMana)
         return FriendIntent::PullWithParty;
 
-    if (situation.inCombat || situation.partyInCombat || situation.hasAttackers || situation.hasTarget || time(nullptr) < manualAttackUntil)
+    if (situation.inCombat || situation.partyInCombat || situation.hasAttackers || situation.hasTarget || now < manualAttackUntil)
         return FriendIntent::DealDamage;
 
     if (situation.leaderSafe && situation.leaderDistance > softLeash)
@@ -542,6 +634,8 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
                 return true;
             if (TryActions(PullActions(situation), "friend pull"))
                 return true;
+            if (ExecuteIdleGoal(situation))
+                return true;
             if (situation.leaderSafe && situation.leaderDistance > PreferredLeaderDistance(situation))
                 return MoveNearLeader(situation, "move near leader", false);
             return false;
@@ -578,7 +672,9 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
 
         case FriendIntent::FollowOrIdle:
             if (assignment == FriendAssignment::StayClose && situation.leaderGuid)
-                return MoveNearLeader(situation, "move near leader", false);
+                return MoveInLeaderOrbit(situation, "stay close", false);
+            if (ExecuteIdleGoal(situation))
+                return true;
             ClearFriendMovement(false);
             SetResult(intent, "", FriendExecutionResult::IntentionalIdle);
             return false;
@@ -735,6 +831,13 @@ Unit* FriendBotController::GetHealTarget(const FriendSituation& situation) const
         return nullptr;
 
     AiObjectContext* context = ai->GetAiObjectContext();
+    if (manualHealUntil > time(nullptr) && manualHealGuid)
+    {
+        Unit* requested = ai->GetUnit(manualHealGuid);
+        if (IsFriendlyTarget(ai, requested) && HealthPercent(ai, requested) < 99)
+            return requested;
+    }
+
     Unit* target = GetContextValue<Unit*>(context, "party member to heal", nullptr);
     if (IsFriendlyTarget(ai, target))
         return target;
@@ -954,7 +1057,8 @@ int32 FriendBotController::ManaSpendScorePenalty(const FriendSituation& situatio
 
 bool FriendBotController::ShouldUseLegacySupportActions(const FriendSituation& situation) const
 {
-    return !situation.inCombat && !situation.partyInCombat && situation.botMana >= FRIEND_MANA_BUFF_COMFORT;
+    return !situation.inCombat && !situation.partyInCombat &&
+        (situation.botMana >= FRIEND_MANA_BUFF_COMFORT || manualBuffUntil > time(nullptr));
 }
 
 bool FriendBotController::TryCastAbility(const FriendAbility& ability, Unit* target, const std::string& source)
@@ -1148,7 +1252,9 @@ bool FriendBotController::TryCatalogSupport(const FriendSituation& situation, co
         }
     }
 
-    if (situation.inCombat || situation.partyInCombat || situation.botMana < FRIEND_MANA_BUFF_COMFORT)
+    const bool manualBuff = manualBuffUntil > time(nullptr);
+    if (situation.inCombat || situation.partyInCombat ||
+        (situation.botMana < FRIEND_MANA_BUFF_COMFORT && !manualBuff))
         return false;
 
     for (const FriendAbility& ability : abilityCatalog.GetAbilities())
@@ -1243,7 +1349,7 @@ bool FriendBotController::IsTargetSetupAction(const std::string& name) const
         name == "attack rti target";
 }
 
-bool FriendBotController::ExecuteLoot(const FriendSituation& situation)
+bool FriendBotController::ExecuteLoot(const FriendSituation& situation, bool allowObjects)
 {
     (void)situation;
     if (!ai || !ai->GetBot() || !ai->GetAiObjectContext())
@@ -1253,7 +1359,7 @@ bool FriendBotController::ExecuteLoot(const FriendSituation& situation)
     LootObjectStack* availableLoot = GetContextValue<LootObjectStack*>(context, "available loot", nullptr);
     LootObject lootTarget = GetContextValue<LootObject>(context, "loot target", LootObject());
 
-    if (!lootTarget.IsEmpty() && !lootTarget.guid.IsCreature())
+    if (!lootTarget.IsEmpty() && !lootTarget.guid.IsCreature() && !allowObjects)
     {
         if (availableLoot)
             availableLoot->Remove(lootTarget.guid);
@@ -1272,7 +1378,7 @@ bool FriendBotController::ExecuteLoot(const FriendSituation& situation)
             if (loot.IsEmpty())
                 return false;
 
-            if (loot.guid.IsCreature())
+            if (loot.guid.IsCreature() || allowObjects)
                 return TryAction("loot", "friend loot") == FriendExecutionResult::Done;
 
             availableLoot->Remove(loot.guid);
@@ -1330,6 +1436,197 @@ bool FriendBotController::MoveToRecoverPosition(const FriendSituation& situation
     return true;
 }
 
+bool FriendBotController::ExecuteIdleGoal(const FriendSituation& situation)
+{
+    if (!ai || !ai->GetBot())
+        return false;
+
+    if (!IsSafeForIdleActivity(situation))
+    {
+        idleGoal = FriendIdleGoal::None;
+        idleGoalUntil = 0;
+        idleNextActionAt = 0;
+
+        if (situation.leaderSafe && situation.leaderDistance > PreferredLeaderDistance(situation))
+            return MoveInLeaderOrbit(situation, "move near leader", false);
+
+        return false;
+    }
+
+    FriendIdleGoal selected = SelectIdleGoal(situation);
+    if (selected == FriendIdleGoal::None)
+        return false;
+
+    return ExecuteCurrentIdleGoal(situation);
+}
+
+bool FriendBotController::IsSafeForIdleActivity(const FriendSituation& situation) const
+{
+    if (assignment == FriendAssignment::HoldPosition || assignment == FriendAssignment::ReturnToParty ||
+        assignment == FriendAssignment::Recover)
+        return false;
+
+    if (situation.inCombat || situation.partyInCombat || situation.hasAttackers)
+        return false;
+
+    if (situation.botHealth < sPlayerbotAIConfig.almostFullHealth ||
+        situation.lowestPartyHealth < sPlayerbotAIConfig.almostFullHealth ||
+        situation.damagedPartyMembers > 0)
+        return false;
+
+    if (mode == FriendMode::Dungeon)
+        return situation.leaderSafe && situation.leaderDistance <= SoftLeashDistance(situation);
+
+    if (mode == FriendMode::Party)
+        return situation.leaderSafe && situation.leaderDistance <= SoftLeashDistance(situation);
+
+    return true;
+}
+
+FriendIdleGoal FriendBotController::SelectIdleGoal(const FriendSituation& situation)
+{
+    const time_t now = time(nullptr);
+    if (idleGoal != FriendIdleGoal::None && idleGoalUntil > now)
+    {
+        if (mode != FriendMode::Dungeon ||
+            (idleGoal != FriendIdleGoal::GatherNearby && idleGoal != FriendIdleGoal::GrindNearby))
+            return idleGoal;
+    }
+
+    idleGoal = FriendIdleGoal::None;
+    idleGoalUntil = 0;
+    idleNextActionAt = 0;
+
+    struct WeightedGoal
+    {
+        FriendIdleGoal goal;
+        uint32 weight;
+    };
+
+    std::vector<WeightedGoal> goals;
+    uint32 personality = ai && ai->GetBot() ? ai->GetBot()->GetObjectGuid().GetCounter() : 0;
+    uint32 socialBias = personality % 25;
+    uint32 gatherBias = (personality / 7) % 30;
+    uint32 grindBias = (personality / 13) % 30;
+
+    if (mode == FriendMode::Dungeon)
+    {
+        goals.push_back({ FriendIdleGoal::OrbitLeader, 75 + socialBias });
+        goals.push_back({ FriendIdleGoal::Loiter, 25 });
+    }
+    else
+    {
+        goals.push_back({ FriendIdleGoal::OrbitLeader, mode == FriendMode::Solo ? 20 + socialBias / 2 : 45 + socialBias });
+        goals.push_back({ FriendIdleGoal::Loiter, mode == FriendMode::Solo ? 20 : 30 });
+
+        if (situation.botMana >= sPlayerbotAIConfig.mediumMana)
+            goals.push_back({ FriendIdleGoal::GatherNearby, (mode == FriendMode::Solo ? 30 : 12) + gatherBias });
+
+        if (situation.possibleTargetsCount > 0 && situation.botMana >= sPlayerbotAIConfig.mediumMana)
+            goals.push_back({ FriendIdleGoal::GrindNearby, (mode == FriendMode::Solo ? 45 : 18) + grindBias });
+    }
+
+    uint32 total = 0;
+    for (const WeightedGoal& goal : goals)
+        total += goal.weight;
+
+    if (!total)
+        return FriendIdleGoal::None;
+
+    uint32 roll = urand(1, total);
+    for (const WeightedGoal& goal : goals)
+    {
+        if (roll <= goal.weight)
+        {
+            idleGoal = goal.goal;
+            break;
+        }
+        roll -= goal.weight;
+    }
+
+    uint32 lease = 20;
+    if (mode == FriendMode::Dungeon)
+        lease = urand(8, 20);
+    else if (mode == FriendMode::Solo)
+        lease = urand(45, 150);
+    else
+        lease = urand(18, 55);
+
+    idleGoalUntil = now + lease;
+    return idleGoal;
+}
+
+bool FriendBotController::ExecuteCurrentIdleGoal(const FriendSituation& situation)
+{
+    const time_t now = time(nullptr);
+    if (idleNextActionAt > now)
+    {
+        SetResult(lastIntent, "idle " + IdleGoalName(idleGoal), FriendExecutionResult::Done);
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        return true;
+    }
+
+    switch (idleGoal)
+    {
+        case FriendIdleGoal::GatherNearby:
+            if (mode != FriendMode::Dungeon)
+            {
+                if (TryAction("add gathering loot", "friend idle") == FriendExecutionResult::Done)
+                {
+                    if (ExecuteLoot(situation, true))
+                    {
+                        idleNextActionAt = now + urand(4, 10);
+                        return true;
+                    }
+
+                    idleNextActionAt = now + urand(4, 10);
+                    return true;
+                }
+                if (ExecuteLoot(situation, true))
+                {
+                    idleNextActionAt = now + urand(4, 10);
+                    return true;
+                }
+            }
+            break;
+
+        case FriendIdleGoal::GrindNearby:
+            if (mode != FriendMode::Dungeon && situation.possibleTargetsCount > 0 &&
+                TryAction("attack anything", "friend idle") == FriendExecutionResult::Done)
+            {
+                idleNextActionAt = now + urand(5, 12);
+                return true;
+            }
+            break;
+
+        case FriendIdleGoal::OrbitLeader:
+            if (MoveInLeaderOrbit(situation, "idle orbit", false))
+            {
+                idleNextActionAt = now + urand(8, 18);
+                return true;
+            }
+            break;
+
+        case FriendIdleGoal::Loiter:
+            idleNextActionAt = now + urand(6, 18);
+            SetResult(lastIntent, "hang out", FriendExecutionResult::Done);
+            ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+            return true;
+
+        case FriendIdleGoal::None:
+            break;
+    }
+
+    idleGoal = FriendIdleGoal::None;
+    idleGoalUntil = 0;
+    idleNextActionAt = now + urand(4, 10);
+
+    if (situation.leaderSafe)
+        return MoveInLeaderOrbit(situation, "idle orbit", false);
+
+    return false;
+}
+
 bool FriendBotController::PreferFreeDamage(const FriendSituation& situation) const
 {
     return ShouldConserveDamageMana(situation);
@@ -1338,6 +1635,11 @@ bool FriendBotController::PreferFreeDamage(const FriendSituation& situation) con
 float FriendBotController::PreferredLeaderDistance(const FriendSituation& situation) const
 {
     float followRange = ai ? ai->GetRange("follow") : 10.0f;
+    if (mode == FriendMode::Dungeon)
+        return std::max(followRange, 6.0f);
+    if (mode == FriendMode::Solo && !situation.inDungeon)
+        return std::max(followRange * 2.5f, 28.0f);
+
     if (situation.inDungeon)
         return std::max(followRange, 8.0f);
 
@@ -1347,6 +1649,11 @@ float FriendBotController::PreferredLeaderDistance(const FriendSituation& situat
 float FriendBotController::SoftLeashDistance(const FriendSituation& situation) const
 {
     float followRange = ai ? ai->GetRange("follow") : 10.0f;
+    if (mode == FriendMode::Dungeon)
+        return std::max(followRange * 1.25f, 12.0f);
+    if (mode == FriendMode::Solo && !situation.inDungeon)
+        return std::max(followRange * 4.0f, 60.0f);
+
     if (situation.inDungeon)
         return std::max(followRange * 1.5f, 16.0f);
 
@@ -1356,10 +1663,85 @@ float FriendBotController::SoftLeashDistance(const FriendSituation& situation) c
 float FriendBotController::HardLeashDistance(const FriendSituation& situation) const
 {
     float followRange = ai ? ai->GetRange("follow") : 10.0f;
+    if (mode == FriendMode::Solo && !situation.inDungeon)
+        return std::max(followRange * 6.0f, 120.0f);
+
     if (situation.inDungeon)
         return std::max(followRange * 2.5f, 30.0f);
 
     return std::max(followRange * 4.0f, 70.0f);
+}
+
+bool FriendBotController::MoveInLeaderOrbit(const FriendSituation& situation, const std::string& action, bool urgent)
+{
+    if (!ai || !ai->GetBot() || !situation.leaderGuid)
+        return false;
+
+    Player* bot = ai->GetBot();
+    Unit* leader = ai->GetGroupMaster();
+    if (!leader || leader->GetObjectGuid() != situation.leaderGuid)
+        leader = ai->GetUnit(situation.leaderGuid);
+
+    if (!leader || !leader->IsInWorld() || leader->GetMapId() != bot->GetMapId() ||
+        !ai->IsSafe(leader) || !ai->CanMove() || !bot->GetMotionMaster())
+        return false;
+
+    if (IsMovingForAction(ai, lastAction, action))
+    {
+        SetResult(lastIntent, action, FriendExecutionResult::Done);
+        ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
+        return true;
+    }
+
+    float minDistance = 5.0f;
+    float maxDistance = 14.0f;
+    if (mode == FriendMode::Dungeon || assignment == FriendAssignment::StayClose)
+    {
+        minDistance = 3.0f;
+        maxDistance = 8.0f;
+    }
+    else if (mode == FriendMode::Solo)
+    {
+        minDistance = 8.0f;
+        maxDistance = 24.0f;
+    }
+
+    if (urgent)
+    {
+        minDistance = 2.0f;
+        maxDistance = std::max(ai->GetRange("follow") * 0.75f, 6.0f);
+    }
+
+    if (situation.leaderDistance >= minDistance && situation.leaderDistance <= maxDistance &&
+        action != "idle orbit")
+    {
+        ClearFriendMovement(true);
+        SetResult(lastIntent, action, FriendExecutionResult::Done);
+        ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
+        return true;
+    }
+
+    const float distance = minDistance + static_cast<float>(urand(0, 1000)) / 1000.0f * (maxDistance - minDistance);
+    const float angle = static_cast<float>(urand(0, 6283)) / 1000.0f;
+    float x = leader->GetPositionX() + std::cos(angle) * distance;
+    float y = leader->GetPositionY() + std::sin(angle) * distance;
+    float z = leader->GetPositionZ();
+    leader->UpdateGroundPositionZ(x, y, z);
+
+    WorldPosition from(bot);
+    WorldPosition to(bot->GetMapId(), x, y, z);
+    if (!from.canPathTo(to, bot) || !bot->IsWithinLOS(x, y, z + bot->GetCollisionHeight(), true))
+    {
+        x = leader->GetPositionX();
+        y = leader->GetPositionY();
+        z = leader->GetPositionZ();
+    }
+
+    ClearFriendMovement(false);
+    bot->GetMotionMaster()->MovePoint(leader->GetMapId(), x, y, z, FORCED_MOVEMENT_RUN, true);
+    SetResult(lastIntent, action, FriendExecutionResult::Done);
+    ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
+    return true;
 }
 
 bool FriendBotController::MoveNearLeader(const FriendSituation& situation, const std::string& action, bool urgent)
@@ -1375,6 +1757,9 @@ bool FriendBotController::MoveNearLeader(const FriendSituation& situation, const
     if (!leader || !leader->IsInWorld() || leader->GetMapId() != bot->GetMapId() ||
         !ai->IsSafe(leader) || !ai->CanMove())
         return false;
+
+    if (!urgent)
+        return MoveInLeaderOrbit(situation, action, false);
 
     const float stopDistance = urgent ? std::max(ai->GetRange("follow") * 0.75f, 6.0f) : PreferredLeaderDistance(situation);
     if (situation.leaderDistance <= stopDistance)
@@ -1400,7 +1785,10 @@ void FriendBotController::ClearFriendMovement(bool includePointMove)
 
     MovementGeneratorType movementType = ai->GetBot()->GetMotionMaster()->GetCurrentMovementGeneratorType();
     if (movementType == FOLLOW_MOTION_TYPE ||
-        (includePointMove && movementType == POINT_MOTION_TYPE && (lastAction == "move near leader" || lastAction == "come")))
+        (includePointMove && movementType == POINT_MOTION_TYPE &&
+            (lastAction == "move near leader" || lastAction == "come" ||
+             lastAction == "stay close" || lastAction == "idle orbit" ||
+             lastAction == "recover position")))
     {
         ai->StopMoving();
     }
@@ -1424,6 +1812,8 @@ void FriendBotController::MaybeSayStatus(const FriendSituation& situation)
     if (verbosity == FriendVerbosity::Debug)
     {
         out << " [" << ResultName(lastResult);
+        out << ", mode " << ModeName(mode);
+        out << ", idle " << IdleGoalName(idleGoal);
         out << ", hp " << static_cast<uint32>(situation.botHealth) << "%";
         out << " (" << static_cast<int32>(situation.botHealthDelta) << ")";
         out << ", mana " << static_cast<uint32>(situation.botMana) << "%";
@@ -1459,13 +1849,18 @@ void FriendBotController::ResetTemporaryAssignmentIfSatisfied(const FriendSituat
         situation.leaderDistance <= std::max(ai->GetRange("follow") * 0.75f, 6.0f))
     {
         assignment = FriendAssignment::ParticipateWithParty;
+        idleGoal = FriendIdleGoal::None;
+        idleGoalUntil = 0;
+        idleNextActionAt = 0;
     }
 
     if (assignment == FriendAssignment::Recover &&
         !situation.inCombat &&
-        situation.botHealth >= sPlayerbotAIConfig.almostFullHealth &&
-        situation.botMana >= sPlayerbotAIConfig.mediumMana)
+        situation.botHealth >= FRIEND_REST_DONE_HEALTH &&
+        situation.botMana >= FRIEND_REST_DONE_MANA)
+    {
         assignment = FriendAssignment::ParticipateWithParty;
+    }
 }
 
 std::vector<std::string> FriendBotController::PositionActions(const FriendSituation& situation) const
@@ -1618,7 +2013,7 @@ std::vector<std::string> FriendBotController::CrowdControlActions(const FriendSi
 std::vector<std::string> FriendBotController::PullActions(const FriendSituation& situation) const
 {
     std::vector<std::string> actions;
-    if (situation.inDungeon || situation.inCombat || situation.partyInCombat || situation.damagedPartyMembers ||
+    if (mode == FriendMode::Dungeon || situation.inDungeon || situation.inCombat || situation.partyInCombat || situation.damagedPartyMembers ||
         !situation.leaderSafe || situation.leaderDistance > sPlayerbotAIConfig.reactDistance ||
         situation.nearbyPartyMembers < 2 || situation.possibleTargetsCount == 0 || situation.possibleTargetsCount > 2)
         return actions;
@@ -1737,6 +2132,32 @@ std::string FriendBotController::AssignmentName(FriendAssignment value)
         case FriendAssignment::ReturnToParty: return "return";
         case FriendAssignment::HoldPosition: return "hold";
         case FriendAssignment::Recover: return "recover";
+    }
+
+    return "unknown";
+}
+
+std::string FriendBotController::ModeName(FriendMode value)
+{
+    switch (value)
+    {
+        case FriendMode::Party: return "party";
+        case FriendMode::Dungeon: return "dungeon";
+        case FriendMode::Solo: return "solo";
+    }
+
+    return "unknown";
+}
+
+std::string FriendBotController::IdleGoalName(FriendIdleGoal value)
+{
+    switch (value)
+    {
+        case FriendIdleGoal::None: return "none";
+        case FriendIdleGoal::Loiter: return "loiter";
+        case FriendIdleGoal::OrbitLeader: return "orbit";
+        case FriendIdleGoal::GatherNearby: return "gather";
+        case FriendIdleGoal::GrindNearby: return "grind";
     }
 
     return "unknown";

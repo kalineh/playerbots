@@ -87,10 +87,12 @@ namespace
     {
         return command == "stop" || command == "hold" || command == "dont move" || command == "don't move" ||
             command == "come" || command == "come here" || command == "return" ||
+            command == "party" || command == "dungeon" || command == "solo" ||
             command == "normal" || command == "reset" || command == "act normal" ||
             command == "stay close" || command == "close" ||
-            command == "recover" || command == "drink" ||
-            command == "attack" || command == "summon" || command == "report" ||
+            command == "recover" || command == "drink" || command == "rest" || command == "rest up" ||
+            command == "attack" || command == "heal" || command == "heal me" || command == "buff" || command == "buff me" ||
+            command == "summon" || command == "report" ||
             command == "verbose" || command == "intent" ||
             command == "debug" || command == "silent";
     }

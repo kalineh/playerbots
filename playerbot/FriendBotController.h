@@ -23,6 +23,22 @@ namespace ai
         Recover
     };
 
+    enum class FriendMode : uint8
+    {
+        Party,
+        Dungeon,
+        Solo
+    };
+
+    enum class FriendIdleGoal : uint8
+    {
+        None,
+        Loiter,
+        OrbitLeader,
+        GatherNearby,
+        GrindNearby
+    };
+
     enum class FriendVerbosity : uint8
     {
         Silent,
@@ -131,8 +147,13 @@ namespace ai
         Unit* GetDamageTarget(const FriendSituation& situation, bool prepare);
         Unit* GetHealTarget(const FriendSituation& situation) const;
         std::vector<Unit*> GetPartyTargets() const;
-        bool ExecuteLoot(const FriendSituation& situation);
+        bool ExecuteLoot(const FriendSituation& situation, bool allowObjects = false);
         bool MoveToRecoverPosition(const FriendSituation& situation);
+        bool ExecuteIdleGoal(const FriendSituation& situation);
+        bool IsSafeForIdleActivity(const FriendSituation& situation) const;
+        FriendIdleGoal SelectIdleGoal(const FriendSituation& situation);
+        bool ExecuteCurrentIdleGoal(const FriendSituation& situation);
+        bool MoveInLeaderOrbit(const FriendSituation& situation, const std::string& action, bool urgent);
         bool PreferFreeDamage(const FriendSituation& situation) const;
         bool IsTargetSetupAction(const std::string& name) const;
         float PreferredLeaderDistance(const FriendSituation& situation) const;
@@ -153,6 +174,8 @@ namespace ai
         std::vector<std::string> DamageActions(const FriendSituation& situation) const;
 
         static std::string AssignmentName(FriendAssignment value);
+        static std::string ModeName(FriendMode value);
+        static std::string IdleGoalName(FriendIdleGoal value);
         static std::string VerbosityName(FriendVerbosity value);
         static std::string IntentName(FriendIntent value);
         static std::string ResultName(FriendExecutionResult value);
@@ -160,6 +183,7 @@ namespace ai
 
     private:
         PlayerbotAI* ai;
+        FriendMode mode = FriendMode::Party;
         FriendAssignment assignment = FriendAssignment::ParticipateWithParty;
         FriendVerbosity verbosity = FriendVerbosity::Silent;
         FriendIntent lastIntent = FriendIntent::FollowOrIdle;
@@ -171,6 +195,12 @@ namespace ai
         uint8 lastLowestPartyHealth = 100;
         std::string lastStatusLine;
         time_t manualAttackUntil = 0;
+        time_t manualHealUntil = 0;
+        time_t manualBuffUntil = 0;
+        ObjectGuid manualHealGuid;
+        FriendIdleGoal idleGoal = FriendIdleGoal::None;
+        time_t idleGoalUntil = 0;
+        time_t idleNextActionAt = 0;
         FriendAbilityCatalog abilityCatalog;
     };
 }
