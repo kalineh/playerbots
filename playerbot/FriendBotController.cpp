@@ -8,6 +8,7 @@
 #include "strategy/Action.h"
 #include "strategy/AiObjectContext.h"
 #include "strategy/Strategy.h"
+#include "strategy/values/PossibleAttackTargetsValue.h"
 
 #include <algorithm>
 #include <cctype>
@@ -114,6 +115,7 @@ void FriendBotController::Reset()
         lastMana = ai->GetManaPercent();
     lastLowestPartyHealth = 100;
     lastStatusLine.clear();
+    lastTargetReason.clear();
     manualAttackUntil = 0;
     manualHealUntil = 0;
     manualBuffUntil = 0;
@@ -153,6 +155,7 @@ void FriendBotController::RunTick(bool minimal)
     ResetTemporaryAssignmentIfSatisfied(situation);
 
     FriendIntent intent = SelectIntent(situation);
+    lastTargetReason.clear();
 
     if (!ExecuteIntent(intent, situation))
     {
@@ -340,10 +343,18 @@ std::string FriendBotController::FormatReport() const
     out << ", intent=" << IntentName(lastIntent);
     out << ", action=" << (lastAction.empty() ? "none" : lastAction);
     out << ", result=" << ResultName(lastResult);
+    out << ", style=" << CombatStyleName(GetCombatStyle(lastSituation));
+    out << ", target=" << (lastTargetReason.empty() ? "none" : lastTargetReason);
     out << ", hp=" << static_cast<uint32>(lastSituation.botHealth) << "%";
     out << ", mana=" << static_cast<uint32>(lastSituation.botMana) << "%";
     out << ", partyHp=" << static_cast<uint32>(lastSituation.lowestPartyHealth) << "%";
     out << ", balance=" << BalanceName(lastSituation.balance);
+    if (lastSituation.botHasThreat)
+        out << ", threat=self";
+    else if (lastSituation.healerPartyHasThreat)
+        out << ", threat=healer";
+    else if (lastSituation.vulnerablePartyHasThreat)
+        out << ", threat=party";
     out << ", leaderDist=" << static_cast<uint32>(lastSituation.leaderDistance);
     out << ", targets=" << static_cast<uint32>(lastSituation.possibleTargetsCount);
     if (lastSituation.nearestHostileGuid)
@@ -382,6 +393,25 @@ FriendSituation FriendBotController::BuildSituation()
         situation.possibleTargetsCount = GetContextValue<uint8>(context, "possible attack targets count", 0);
         situation.balance = GetContextValue<uint8>(context, "balance", 100);
 
+        float closestAttackerTargetingMeDistance = 0.0f;
+        std::list<ObjectGuid> attackersTargetingMe = context->GetValue<std::list<ObjectGuid> >("attackers targeting me")->Get();
+        for (std::list<ObjectGuid>::const_iterator itr = attackersTargetingMe.begin(); itr != attackersTargetingMe.end(); ++itr)
+        {
+            Unit* unit = ai->GetUnit(*itr);
+            if (!IsHostileTarget(ai, unit))
+                continue;
+
+            ++situation.attackersTargetingMeCount;
+            situation.botHasThreat = true;
+
+            float distance = sServerFacade.GetDistance2d(bot, unit);
+            if (!situation.closestAttackerTargetingMeGuid || distance < closestAttackerTargetingMeDistance)
+            {
+                situation.closestAttackerTargetingMeGuid = unit->GetObjectGuid();
+                closestAttackerTargetingMeDistance = distance;
+            }
+        }
+
         LootObjectStack* availableLoot = GetContextValue<LootObjectStack*>(context, "available loot", nullptr);
         if (availableLoot)
         {
@@ -409,6 +439,51 @@ FriendSituation FriendBotController::BuildSituation()
             situation.hasTarget = true;
             situation.targetDistance = sServerFacade.GetDistance2d(bot, target);
             situation.targetIsElite = IsEliteTarget(ai, target);
+        }
+
+        Unit* rtiTarget = GetContextValue<Unit*>(context, "rti target", nullptr);
+        if (IsHostileTarget(ai, rtiTarget))
+            situation.rtiTargetGuid = rtiTarget->GetObjectGuid();
+
+        Unit* rtiCcTarget = GetContextValue<Unit*>(context, "rti cc target", nullptr);
+        if (IsHostileTarget(ai, rtiCcTarget))
+            situation.rtiCcTargetGuid = rtiCcTarget->GetObjectGuid();
+
+        std::list<ObjectGuid> possibleTargets = context->GetValue<std::list<ObjectGuid> >("possible attack targets")->Get();
+        for (std::list<ObjectGuid>::const_iterator itr = possibleTargets.begin(); itr != possibleTargets.end(); ++itr)
+        {
+            Unit* unit = ai->GetUnit(*itr);
+            if (!IsHostileTarget(ai, unit))
+                continue;
+
+            if (ShouldAvoidBreakingCrowdControl(unit))
+                ++situation.crowdControlledTargets;
+
+            Unit* victim = unit->GetVictim();
+            if (!victim || !IsFriendlyTarget(ai, victim))
+                continue;
+
+            if (victim == bot)
+            {
+                situation.botHasThreat = true;
+                continue;
+            }
+
+            Player* playerVictim = dynamic_cast<Player*>(victim);
+            if (playerVictim && ai->IsHeal(playerVictim))
+            {
+                situation.healerPartyHasThreat = true;
+                if (!situation.vulnerablePartyAttackerGuid)
+                    situation.vulnerablePartyAttackerGuid = unit->GetObjectGuid();
+            }
+
+            if (HealthPercent(ai, victim) < sPlayerbotAIConfig.mediumHealth)
+            {
+                situation.vulnerablePartyHasThreat = true;
+                if (!situation.vulnerablePartyAttackerGuid ||
+                    HealthPercent(ai, unit) < HealthPercent(ai, ai->GetUnit(situation.vulnerablePartyAttackerGuid)))
+                    situation.vulnerablePartyAttackerGuid = unit->GetObjectGuid();
+            }
         }
 
         std::list<ObjectGuid> nearbyNpcs = context->GetValue<std::list<ObjectGuid> >("nearest npcs no los")->Get();
@@ -465,6 +540,10 @@ FriendSituation FriendBotController::BuildSituation()
         situation.leaderDistance = sServerFacade.GetDistance2d(bot, leader);
         situation.leaderInCombat = sServerFacade.IsInCombat(leader);
         situation.partyInCombat = situation.partyInCombat || situation.leaderInCombat;
+
+        Unit* leaderTarget = leader->GetTarget();
+        if (IsHostileTarget(ai, leaderTarget))
+            situation.leaderTargetGuid = leaderTarget->GetObjectGuid();
     }
 
     return situation;
@@ -506,6 +585,9 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
         situation.lowestPartyHealth < sPlayerbotAIConfig.almostFullHealth &&
         (situation.inCombat || situation.partyInCombat))
         return FriendIntent::SavePartyMember;
+
+    if (situation.inCombat && PrefersSelfDefenseTarget(situation) && situation.attackersTargetingMeCount > 0)
+        return FriendIntent::CrowdControl;
 
     if (situation.inCombat && (((situation.ranged || situation.healerish) && situation.hasAttackers) ||
         (situation.ranged && situation.targetDistance > 0.0f && situation.targetDistance < 8.0f)))
@@ -574,8 +656,8 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
                 return true;
             if (situation.leaderSafe && situation.leaderDistance > SoftLeashDistance(situation))
                 return MoveNearLeader(situation, "move near leader", false);
-            if (ShouldConserveDamageMana(situation))
-                return TryFreeDamage(situation, "friend free damage");
+            if (ShouldConserveDamageMana(situation) && TryFreeDamage(situation, "friend free damage"))
+                return true;
             if (TryCatalogDamage(situation, "friend damage"))
                 return true;
             return TryActions(DamageActions(situation), "friend damage");
@@ -599,8 +681,8 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
             }
             if (TryActions({ "mana gem", "mana potion", "dark rune", "life tap", "dark pact" }, "friend combat recover"))
                 return true;
-            if (ShouldConserveDamageMana(situation))
-                return TryFreeDamage(situation, "friend free damage");
+            if (ShouldConserveDamageMana(situation) && TryFreeDamage(situation, "friend free damage"))
+                return true;
             if (TryCatalogDamage(situation, "friend damage"))
                 return true;
             return TryActions(DamageActions(situation), "friend damage");
@@ -641,8 +723,8 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
                 return true;
             if (TryActions(CrowdControlActions(situation), "friend cc"))
                 return true;
-            if (ShouldConserveDamageMana(situation))
-                return TryFreeDamage(situation, "friend free damage");
+            if (ShouldConserveDamageMana(situation) && TryFreeDamage(situation, "friend free damage"))
+                return true;
             if (TryCatalogDamage(situation, "friend damage"))
                 return true;
             return TryActions(DamageActions(situation), "friend damage");
@@ -654,8 +736,8 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
             return ExecuteLoot(situation);
 
         case FriendIntent::DealDamage:
-            if (ShouldConserveDamageMana(situation))
-                return TryFreeDamage(situation, "friend free damage");
+            if (GetCombatStyle(situation) == FriendCombatStyle::Dry && TryFreeDamage(situation, "friend free damage"))
+                return true;
             if (TryCatalogDamage(situation, "friend damage"))
                 return true;
             if (PrefersMeleeDamage(situation) && MoveToDamageTarget(situation, "move to melee"))
@@ -764,35 +846,208 @@ bool FriendBotController::TryPrerequisites(Action* action, const std::string& so
 
 Unit* FriendBotController::GetDamageTarget(const FriendSituation& situation, bool prepare)
 {
-    (void)situation;
+    (void)prepare;
+
+    std::string reason;
+    Unit* target = SelectDamageTarget(situation, false, reason);
+    if (!target)
+        target = SelectDamageTarget(situation, true, reason);
+
+    if (!target)
+        return nullptr;
+
+    SetCurrentDamageTarget(target, reason);
+    return target;
+}
+
+Unit* FriendBotController::SelectDamageTarget(const FriendSituation& situation, bool allowCrowdControlFallback, std::string& reason)
+{
+    reason = "none";
+    if (!ai || !ai->GetBot() || !ai->GetAiObjectContext())
+        return nullptr;
+
+    AiObjectContext* context = ai->GetAiObjectContext();
+    Unit* crowdControlFallback = nullptr;
+    std::string crowdControlReason;
+
+    auto consider = [&](Unit* candidate, const std::string& candidateReason) -> Unit*
+    {
+        if (!IsValidFriendDamageTarget(candidate, true))
+            return nullptr;
+
+        if (ShouldAvoidBreakingCrowdControl(candidate))
+        {
+            if (!crowdControlFallback)
+            {
+                crowdControlFallback = candidate;
+                crowdControlReason = candidateReason + ":cc";
+            }
+
+            return nullptr;
+        }
+
+        reason = candidateReason;
+        return candidate;
+    };
+
+    Unit* target = nullptr;
+    if (ai->GetBot()->GetGroup())
+    {
+        ObjectGuid skullGuid = ObjectGuid(ai->GetBot()->GetGroup()->GetTargetIcon(7));
+        target = ai->GetUnit(skullGuid);
+        if (Unit* selected = consider(target, "skull"))
+            return selected;
+    }
+
+    target = GetContextValue<Unit*>(context, "rti target", nullptr);
+    if (Unit* selected = consider(target, IsSkullTarget(target) ? "skull" : "rti"))
+        return selected;
+
+    target = ai->GetUnit(situation.leaderTargetGuid);
+    if (Unit* selected = consider(target, "leader"))
+        return selected;
+
+    if (PrefersSelfDefenseTarget(situation))
+    {
+        target = ai->GetUnit(situation.closestAttackerTargetingMeGuid);
+        if (Unit* selected = consider(target, "self-threat"))
+            return selected;
+    }
+
+    target = ai->GetUnit(situation.vulnerablePartyAttackerGuid);
+    if (Unit* selected = consider(target, situation.healerPartyHasThreat ? "healer-threat" : "party-threat"))
+        return selected;
+
+    Unit* bestLowestHealth = nullptr;
+    uint32 bestHealth = 0;
+    std::list<ObjectGuid> possibleTargets = context->GetValue<std::list<ObjectGuid> >("possible attack targets")->Get();
+    for (std::list<ObjectGuid>::const_iterator itr = possibleTargets.begin(); itr != possibleTargets.end(); ++itr)
+    {
+        Unit* candidate = ai->GetUnit(*itr);
+        if (!IsValidFriendDamageTarget(candidate, true))
+            continue;
+
+        if (ShouldAvoidBreakingCrowdControl(candidate))
+        {
+            if (!crowdControlFallback)
+            {
+                crowdControlFallback = candidate;
+                crowdControlReason = "lowest-hp:cc";
+            }
+            continue;
+        }
+
+        if (!bestLowestHealth || candidate->GetHealth() < bestHealth)
+        {
+            bestLowestHealth = candidate;
+            bestHealth = candidate->GetHealth();
+        }
+    }
+
+    if (bestLowestHealth)
+    {
+        reason = "lowest-hp";
+        return bestLowestHealth;
+    }
+
+    target = GetContextValue<Unit*>(context, "current target", nullptr);
+    if (Unit* selected = consider(target, "current"))
+        return selected;
+
+    target = GetContextValue<Unit*>(context, "dps target", nullptr);
+    if (Unit* selected = consider(target, "dps"))
+        return selected;
+
+    target = GetContextValue<Unit*>(context, "least hp target", nullptr);
+    if (Unit* selected = consider(target, "least-hp"))
+        return selected;
+
+    if (allowCrowdControlFallback && crowdControlFallback)
+    {
+        reason = crowdControlReason.empty() ? "cc-fallback" : crowdControlReason;
+        return crowdControlFallback;
+    }
+
+    return nullptr;
+}
+
+Unit* FriendBotController::GetCrowdControlTarget(const FriendSituation& situation, const FriendAbility& ability, Unit* currentDamageTarget) const
+{
     if (!ai || !ai->GetAiObjectContext())
         return nullptr;
 
     AiObjectContext* context = ai->GetAiObjectContext();
-    Unit* target = GetContextValue<Unit*>(context, "current target", nullptr);
-    if (!IsHostileTarget(ai, target))
-        target = GetContextValue<Unit*>(context, "rti target", nullptr);
-    if (!IsHostileTarget(ai, target))
-        target = GetContextValue<Unit*>(context, "dps target", nullptr);
-    if (!IsHostileTarget(ai, target))
-        target = GetContextValue<Unit*>(context, "least hp target", nullptr);
+    const bool currentTargetCasting = currentDamageTarget && currentDamageTarget->IsNonMeleeSpellCasted(false);
+    if (ability.Has(FRIEND_ABILITY_INTERRUPT) && currentTargetCasting)
+        return currentDamageTarget;
 
-    if (IsHostileTarget(ai, target))
-    {
-        context->GetValue<Unit*>("current target")->Set(target);
-        ai->GetBot()->SetSelectionGuid(target->GetObjectGuid());
+    Unit* target = ai->GetUnit(situation.closestAttackerTargetingMeGuid);
+    if (PrefersSelfDefenseTarget(situation) && IsHostileTarget(ai, target) && !IsSkullTarget(target))
         return target;
-    }
 
-    if (!prepare)
-        return nullptr;
+    target = GetContextValue<Unit*>(context, "rti cc target", nullptr);
+    if (IsHostileTarget(ai, target))
+        return target;
 
-    if (GetContextValue<Unit*>(context, "rti target", nullptr))
-        TryAction("attack rti target", "friend target");
-    TryAction("dps assist", "friend target");
-    TryAction("attack least hp target", "friend target");
+    target = ai->GetUnit(situation.rtiCcTargetGuid);
+    if (IsHostileTarget(ai, target))
+        return target;
 
-    return GetDamageTarget(situation, false);
+    target = context->GetValue<Unit*>("cc target", ability.name)->Get();
+    if (IsHostileTarget(ai, target) && !IsSkullTarget(target))
+        return target;
+
+    return nullptr;
+}
+
+bool FriendBotController::IsValidFriendDamageTarget(Unit* target, bool allowCrowdControlFallback) const
+{
+    if (!ai || !ai->GetBot() || !IsHostileTarget(ai, target))
+        return false;
+
+    if (!PossibleAttackTargetsValue::IsValid(target, ai->GetBot(), sPlayerbotAIConfig.sightDistance, true, false))
+        return false;
+
+    return allowCrowdControlFallback || !ShouldAvoidBreakingCrowdControl(target);
+}
+
+bool FriendBotController::ShouldAvoidBreakingCrowdControl(Unit* target) const
+{
+    if (!ai || !ai->GetBot() || !target || IsSkullTarget(target))
+        return false;
+
+    if (IsMoonTarget(target))
+        return true;
+
+    AiObjectContext* context = ai->GetAiObjectContext();
+    Unit* rtiCcTarget = GetContextValue<Unit*>(context, "rti cc target", nullptr);
+    if (rtiCcTarget && rtiCcTarget == target)
+        return true;
+
+    return PossibleAttackTargetsValue::HasBreakableCC(target, ai->GetBot()) ||
+        PossibleAttackTargetsValue::HasUnBreakableCC(target, ai->GetBot());
+}
+
+bool FriendBotController::IsSkullTarget(Unit* target) const
+{
+    return ai && ai->GetBot() && target && ai->GetBot()->GetGroup() &&
+        ai->GetBot()->GetGroup()->GetTargetIcon(7) == target->GetObjectGuid();
+}
+
+bool FriendBotController::IsMoonTarget(Unit* target) const
+{
+    return ai && ai->GetBot() && target && ai->GetBot()->GetGroup() &&
+        ai->GetBot()->GetGroup()->GetTargetIcon(4) == target->GetObjectGuid();
+}
+
+void FriendBotController::SetCurrentDamageTarget(Unit* target, const std::string& reason)
+{
+    if (!ai || !ai->GetBot() || !ai->GetAiObjectContext() || !target)
+        return;
+
+    ai->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(target);
+    ai->GetBot()->SetSelectionGuid(target->GetObjectGuid());
+    lastTargetReason = reason;
 }
 
 std::vector<Unit*> FriendBotController::GetPartyTargets() const
@@ -1073,15 +1328,60 @@ bool FriendBotController::PrefersMeleeDamage(const FriendSituation& situation) c
     }
 }
 
-bool FriendBotController::ShouldConserveDamageMana(const FriendSituation& situation) const
+bool FriendBotController::PrefersSelfDefenseTarget(const FriendSituation& situation) const
 {
-    if (!ai || !ai->GetBot() || !ai->GetBot()->HasMana())
+    if (!ai || !ai->GetBot() || !situation.closestAttackerTargetingMeGuid)
         return false;
 
-    if (!IsLowPressureFight(situation))
-        return situation.botMana < sPlayerbotAIConfig.mediumMana;
+    if (situation.tankish)
+        return false;
 
-    return situation.botMana < FRIEND_MANA_DAMAGE_CONSERVE;
+    switch (ai->GetBot()->getClass())
+    {
+        case CLASS_WARRIOR:
+        case CLASS_PALADIN:
+        case CLASS_ROGUE:
+            return false;
+        default:
+            return situation.healerish || situation.ranged || situation.botHealth < sPlayerbotAIConfig.mediumHealth;
+    }
+}
+
+FriendCombatStyle FriendBotController::GetCombatStyle(const FriendSituation& situation) const
+{
+    if (!ai || !ai->GetBot() || !ai->GetBot()->HasMana())
+        return FriendCombatStyle::Normal;
+
+    const bool urgent = situation.botHealth < sPlayerbotAIConfig.lowHealth ||
+        situation.lowestPartyHealth < sPlayerbotAIConfig.lowHealth ||
+        situation.botHealthDelta <= -12 ||
+        situation.lowestPartyHealthDelta <= -12 ||
+        situation.vulnerablePartyHasThreat ||
+        situation.healerPartyHasThreat;
+    if (urgent)
+        return FriendCombatStyle::Burn;
+
+    const bool hardFight = situation.inDungeon ||
+        situation.targetIsElite ||
+        situation.possibleTargetsCount > 1 ||
+        situation.attackersCount > 1 ||
+        situation.balance < 85;
+    if (hardFight)
+        return situation.botMana < sPlayerbotAIConfig.lowMana ? FriendCombatStyle::Conserve : FriendCombatStyle::Normal;
+
+    if (situation.botMana < sPlayerbotAIConfig.lowMana)
+        return FriendCombatStyle::Dry;
+
+    if (IsLowPressureFight(situation) && situation.botMana < FRIEND_MANA_DAMAGE_CONSERVE)
+        return FriendCombatStyle::Conserve;
+
+    return FriendCombatStyle::Normal;
+}
+
+bool FriendBotController::ShouldConserveDamageMana(const FriendSituation& situation) const
+{
+    FriendCombatStyle style = GetCombatStyle(situation);
+    return style == FriendCombatStyle::Conserve || style == FriendCombatStyle::Dry;
 }
 
 bool FriendBotController::IsLowPressureFight(const FriendSituation& situation) const
@@ -1102,15 +1402,17 @@ int32 FriendBotController::ManaSpendScorePenalty(const FriendSituation& situatio
     if (!ability.UsesMana() || ability.Has(FRIEND_ABILITY_INTERRUPT))
         return 0;
 
-    if (!IsLowPressureFight(situation))
-        return situation.botMana < sPlayerbotAIConfig.mediumMana ? 25 : 0;
-
-    if (situation.botMana < 55)
-        return ability.Has(FRIEND_ABILITY_DOT) ? 45 : 85;
-    if (situation.botMana < FRIEND_MANA_BUFF_COMFORT)
-        return ability.Has(FRIEND_ABILITY_DOT) ? 30 : 65;
-    if (situation.botMana < 90)
-        return ability.Has(FRIEND_ABILITY_DOT) ? 5 : 25;
+    switch (GetCombatStyle(situation))
+    {
+        case FriendCombatStyle::Burn:
+            return 0;
+        case FriendCombatStyle::Normal:
+            return situation.botMana < sPlayerbotAIConfig.mediumMana ? 20 : 0;
+        case FriendCombatStyle::Conserve:
+            return ability.Has(FRIEND_ABILITY_DOT) ? 25 : 55;
+        case FriendCombatStyle::Dry:
+            return ability.Has(FRIEND_ABILITY_DOT) ? 60 : 120;
+    }
 
     return 0;
 }
@@ -1344,14 +1646,13 @@ bool FriendBotController::TryCatalogCrowdControl(const FriendSituation& situatio
     if (!ai || !ai->GetAiObjectContext())
         return false;
 
-    AiObjectContext* context = ai->GetAiObjectContext();
     Unit* damageTarget = GetDamageTarget(situation, false);
-    const bool targetCasting = damageTarget && damageTarget->IsNonMeleeSpellCasted(false);
 
     struct Candidate
     {
         const FriendAbility* ability;
         Unit* target;
+        std::string reason;
         int32 score;
     };
 
@@ -1364,19 +1665,28 @@ bool FriendBotController::TryCatalogCrowdControl(const FriendSituation& situatio
         if (situation.inDungeon && ability.Has(FRIEND_ABILITY_FEAR))
             continue;
 
-        Unit* target = nullptr;
-        if (ability.Has(FRIEND_ABILITY_INTERRUPT) && targetCasting)
-            target = damageTarget;
-
-        if (!target)
-            target = context->GetValue<Unit*>("cc target", ability.name)->Get();
-
+        Unit* target = GetCrowdControlTarget(situation, ability, damageTarget);
         if (!IsHostileTarget(ai, target))
             continue;
 
         int32 score = 20;
-        if (ability.Has(FRIEND_ABILITY_INTERRUPT) && target == damageTarget && targetCasting)
+        std::string reason = "cc";
+        if (target->GetObjectGuid() == situation.closestAttackerTargetingMeGuid)
+        {
+            score += 45;
+            reason = "cc:self-threat";
+        }
+        else if (target->GetObjectGuid() == situation.rtiCcTargetGuid || IsMoonTarget(target))
+        {
+            score += 30;
+            reason = "cc:mark";
+        }
+
+        if (ability.Has(FRIEND_ABILITY_INTERRUPT) && target == damageTarget && damageTarget && damageTarget->IsNonMeleeSpellCasted(false))
+        {
             score += 80;
+            reason = "interrupt";
+        }
         if (ability.Has(FRIEND_ABILITY_FEAR))
             score -= situation.inDungeon ? 100 : 10;
         if (ability.Has(FRIEND_ABILITY_AOE) && situation.possibleTargetsCount < 3)
@@ -1390,7 +1700,7 @@ bool FriendBotController::TryCatalogCrowdControl(const FriendSituation& situatio
         }
 
         if (score > 0)
-            candidates.push_back({ &ability, target, score });
+            candidates.push_back({ &ability, target, reason, score });
     }
 
     std::sort(candidates.begin(), candidates.end(), [](const Candidate& left, const Candidate& right)
@@ -1400,6 +1710,7 @@ bool FriendBotController::TryCatalogCrowdControl(const FriendSituation& situatio
 
     for (const Candidate& candidate : candidates)
     {
+        lastTargetReason = candidate.reason;
         if (TryCastAbility(*candidate.ability, candidate.target, source))
             return true;
     }
@@ -1695,7 +2006,7 @@ bool FriendBotController::ExecuteCurrentIdleGoal(const FriendSituation& situatio
 
 bool FriendBotController::PreferFreeDamage(const FriendSituation& situation) const
 {
-    return ShouldConserveDamageMana(situation);
+    return GetCombatStyle(situation) == FriendCombatStyle::Dry;
 }
 
 float FriendBotController::PreferredLeaderDistance(const FriendSituation& situation) const
@@ -1887,11 +2198,24 @@ void FriendBotController::MaybeSayStatus(const FriendSituation& situation)
         out << " (" << static_cast<int32>(situation.lowestPartyHealthDelta) << ")";
         out << ", combat " << (situation.inCombat ? "self" : "no");
         out << "/" << (situation.partyInCombat ? "party" : "no");
-        out << ", threat " << (situation.hasAttackers ? "yes" : "no");
+        out << ", style " << CombatStyleName(GetCombatStyle(situation));
+        out << ", target " << (lastTargetReason.empty() ? "none" : lastTargetReason);
+        out << ", threat ";
+        if (situation.botHasThreat)
+            out << "self";
+        else if (situation.healerPartyHasThreat)
+            out << "healer";
+        else if (situation.vulnerablePartyHasThreat)
+            out << "party";
+        else
+            out << "none";
+        out << "(" << static_cast<uint32>(situation.attackersTargetingMeCount) << ")";
         out << ", leader " << static_cast<uint32>(situation.leaderDistance);
-        out << ", target " << static_cast<uint32>(situation.targetDistance);
+        out << ", targetDist " << static_cast<uint32>(situation.targetDistance);
         out << ", " << BalanceName(situation.balance);
         out << ", targets " << static_cast<uint32>(situation.possibleTargetsCount) << "]";
+        if (situation.crowdControlledTargets)
+            out << " [cc " << static_cast<uint32>(situation.crowdControlledTargets) << "]";
         if (situation.hasCreatureLoot)
             out << " [loot]";
     }
@@ -2105,12 +2429,7 @@ std::vector<std::string> FriendBotController::DamageActions(const FriendSituatio
 {
     std::vector<std::string> actions;
     if (situation.tankish)
-        AddActions(actions, { "tank assist", "taunt", "hand of reckoning", "righteous defense", "growl", "dark command" });
-
-    AiObjectContext* context = ai ? ai->GetAiObjectContext() : nullptr;
-    if (GetContextValue<Unit*>(context, "rti target", nullptr))
-        actions.push_back("attack rti target");
-    AddActions(actions, { "dps assist", "attack least hp target" });
+        AddActions(actions, { "taunt", "hand of reckoning", "righteous defense", "growl", "dark command" });
 
     const bool preferFreeDamage = PreferFreeDamage(situation);
     if (preferFreeDamage)
@@ -2273,6 +2592,19 @@ std::string FriendBotController::ResultName(FriendExecutionResult value)
         case FriendExecutionResult::BlockedNotUseful: return "not useful";
         case FriendExecutionResult::BlockedNotPossible: return "not possible";
         case FriendExecutionResult::Failed: return "failed";
+    }
+
+    return "unknown";
+}
+
+std::string FriendBotController::CombatStyleName(FriendCombatStyle value)
+{
+    switch (value)
+    {
+        case FriendCombatStyle::Burn: return "burn";
+        case FriendCombatStyle::Normal: return "normal";
+        case FriendCombatStyle::Conserve: return "conserve";
+        case FriendCombatStyle::Dry: return "dry";
     }
 
     return "unknown";
