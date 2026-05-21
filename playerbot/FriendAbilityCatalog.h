@@ -45,6 +45,7 @@ namespace ai
         uint32 dispelType = 0;
         float minRange = 0.0f;
         float maxRange = 0.0f;
+        int32 duration = 0;
         uint32 powerType = 0;
         uint32 manaCost = 0;
         uint32 manaCostPercent = 0;

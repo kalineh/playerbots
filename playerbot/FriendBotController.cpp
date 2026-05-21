@@ -23,6 +23,7 @@ namespace
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
     const float FRIEND_RECOVER_COMFORT_DISTANCE = 24.0f;
+    const int32 FRIEND_DOWNTIME_BUFF_MIN_DURATION = 5 * 60 * IN_MILLISECONDS;
     const uint8 FRIEND_REST_DONE_HEALTH = 95;
     const uint8 FRIEND_REST_DONE_MANA = 90;
 
@@ -1322,9 +1323,7 @@ bool FriendBotController::TryCatalogSupport(const FriendSituation& situation, co
             ability.Has(FRIEND_ABILITY_HEAL) || ability.Has(FRIEND_ABILITY_DAMAGE) || ability.Has(FRIEND_ABILITY_CURE))
             continue;
 
-        if (ability.lowerName.find("battle shout") != std::string::npos ||
-            ability.lowerName.find("commanding shout") != std::string::npos ||
-            ability.lowerName.find("horn of winter") != std::string::npos)
+        if (ability.duration == 0 || (ability.duration > 0 && ability.duration < FRIEND_DOWNTIME_BUFF_MIN_DURATION))
             continue;
 
         if (ability.powerType != POWER_MANA && (ability.manaCost > 0 || ability.manaCostPercent > 0))

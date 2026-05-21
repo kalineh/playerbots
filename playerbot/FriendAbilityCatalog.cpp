@@ -333,6 +333,7 @@ void FriendAbilityCatalog::Refresh(PlayerbotAI* ai)
         ability.spellId = spellId;
         ability.name = rawName;
         ability.lowerName = ToLower(ability.name);
+        ability.duration = GetSpellDuration(spellInfo);
         ability.powerType = spellInfo->powerType;
         ability.manaCost = spellInfo->manaCost;
         ability.manaCostPercent = spellInfo->ManaCostPercentage;
