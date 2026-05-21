@@ -116,17 +116,29 @@ void PacketHandlingHelper::Handle(ExternalEventHelper &helper)
     if (!m_botPacketMutex.try_lock()) //Packets do not have to be handled now. Handle them later.
         return;
 
+    std::stack<WorldPacket> pending = queue;
+    while (!queue.empty())
+        queue.pop();
+
+    m_botPacketMutex.unlock();
+
     std::stack<WorldPacket> delayed;
 
-    while (!queue.empty())
+    while (!pending.empty())
     {
-        if (!helper.HandlePacket(handlers, queue.top()))
-            if(delay[queue.top().GetOpcode()])
-                delayed.push(queue.top());
-        queue.pop();
+        if (!helper.HandlePacket(handlers, pending.top()))
+            if(delay[pending.top().GetOpcode()])
+                delayed.push(pending.top());
+        pending.pop();
     }
 
-    queue = delayed;
+    m_botPacketMutex.lock();
+
+    while (!delayed.empty())
+    {
+        queue.push(delayed.top());
+        delayed.pop();
+    }
 
     m_botPacketMutex.unlock();
 }
@@ -146,11 +158,17 @@ void PacketHandlingHelper::HandleFriendMode(PlayerbotAI* ai)
     if (!m_botPacketMutex.try_lock())
         return;
 
+    std::stack<WorldPacket> pending = queue;
+    while (!queue.empty())
+        queue.pop();
+
+    m_botPacketMutex.unlock();
+
     std::stack<WorldPacket> delayed;
 
-    while (!queue.empty())
+    while (!pending.empty())
     {
-        WorldPacket packet = queue.top();
+        WorldPacket packet = pending.top();
         const uint16 opcode = packet.GetOpcode();
         bool handled = false;
         bool allowed = false;
@@ -183,10 +201,16 @@ void PacketHandlingHelper::HandleFriendMode(PlayerbotAI* ai)
         if (allowed && !handled && delay[opcode])
             delayed.push(packet);
 
-        queue.pop();
+        pending.pop();
     }
 
-    queue = delayed;
+    m_botPacketMutex.lock();
+
+    while (!delayed.empty())
+    {
+        queue.push(delayed.top());
+        delayed.pop();
+    }
 
     m_botPacketMutex.unlock();
 }
