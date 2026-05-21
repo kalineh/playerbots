@@ -161,6 +161,8 @@ bool FriendBotController::HandleCommand(const std::string& command, Player* requ
     {
         assignment = FriendAssignment::ParticipateWithParty;
         manualAttackUntil = time(nullptr) + 20;
+        if (requester && requester->GetSelectionGuid() && ai && ai->GetAiObjectContext())
+            ai->GetAiObjectContext()->GetValue<ObjectGuid>("attack target")->Set(requester->GetSelectionGuid());
         response = "Attacking with you.";
         return true;
     }
@@ -313,9 +315,10 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
     if (assignment == FriendAssignment::Recover && !situation.inCombat)
         return FriendIntent::RecoverResources;
 
-    float followRange = ai->GetRange("follow");
-    float hardLeash = situation.inDungeon ? followRange * 1.5f : std::max(followRange * 2.0f, 45.0f);
-    if (situation.leaderSafe && situation.leaderDistance > hardLeash && (!situation.inCombat || situation.inDungeon || !situation.hasAttackers))
+    float softLeash = SoftLeashDistance(situation);
+    float hardLeash = HardLeashDistance(situation);
+    if (situation.leaderSafe && situation.leaderDistance > hardLeash &&
+        (!situation.inCombat || situation.inDungeon || !situation.hasAttackers))
         return FriendIntent::ReturnToParty;
 
     if (situation.botHealth < sPlayerbotAIConfig.lowHealth ||
@@ -329,8 +332,7 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
         return FriendIntent::SavePartyMember;
 
     if (situation.inCombat && (((situation.ranged || situation.healerish) && situation.hasAttackers) ||
-        (situation.ranged && situation.targetDistance > 0.0f && situation.targetDistance < 8.0f) ||
-        (situation.leaderSafe && situation.leaderDistance > followRange * 1.25f)))
+        (situation.ranged && situation.targetDistance > 0.0f && situation.targetDistance < 8.0f)))
         return FriendIntent::ImprovePosition;
 
     if (!situation.inCombat && situation.botMana < sPlayerbotAIConfig.lowMana && !situation.leaderInCombat)
@@ -338,9 +340,6 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
 
     if (situation.inCombat && situation.inDungeon && situation.possibleTargetsCount > 1 && !situation.tankish)
         return FriendIntent::CrowdControl;
-
-    if (situation.leaderSafe && situation.leaderDistance > followRange)
-        return FriendIntent::ReturnToParty;
 
     if (!situation.inCombat && !situation.partyInCombat && situation.damagedPartyMembers == 0)
         return FriendIntent::BuffOrCureParty;
@@ -354,11 +353,20 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
     if (situation.inCombat || situation.partyInCombat || situation.hasAttackers || situation.hasTarget || time(nullptr) < manualAttackUntil)
         return FriendIntent::DealDamage;
 
+    if (situation.leaderSafe && situation.leaderDistance > softLeash)
+        return FriendIntent::ReturnToParty;
+
     return FriendIntent::FollowOrIdle;
 }
 
 bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituation& situation)
 {
+    const bool keepFriendMovement = intent == FriendIntent::ReturnToParty ||
+        intent == FriendIntent::HoldPosition ||
+        (intent == FriendIntent::FollowOrIdle && assignment == FriendAssignment::StayClose);
+    if (!keepFriendMovement)
+        ClearFriendMovement(true);
+
     lastIntent = intent;
 
     switch (intent)
@@ -370,11 +378,15 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
             return true;
 
         case FriendIntent::ReturnToParty:
-            return TryActions({ "follow" }, "friend return");
+            return MoveNearLeader(situation,
+                assignment == FriendAssignment::ReturnToParty ? "come" : "move near leader",
+                assignment == FriendAssignment::ReturnToParty);
 
         case FriendIntent::ImprovePosition:
             if (TryActions(PositionActions(situation), "friend position"))
                 return true;
+            if (situation.leaderSafe && situation.leaderDistance > SoftLeashDistance(situation))
+                return MoveNearLeader(situation, "move near leader", false);
             return TryActions(DamageActions(situation), "friend damage");
 
         case FriendIntent::RecoverResources:
@@ -391,13 +403,22 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
             if (TryActions(HealActions(situation), "friend heal"))
                 return true;
             if (situation.inCombat || situation.partyInCombat)
-                return TryActions(DamageActions(situation), "friend damage");
+            {
+                if (TryActions(DamageActions(situation), "friend damage"))
+                    return true;
+                if (situation.leaderSafe && situation.leaderDistance > SoftLeashDistance(situation))
+                    return MoveNearLeader(situation, "move near leader", false);
+            }
             return false;
 
         case FriendIntent::BuffOrCureParty:
             if (TryActions(BuffOrCureActions(situation), "friend support"))
                 return true;
-            return TryActions(PullActions(situation), "friend pull");
+            if (TryActions(PullActions(situation), "friend pull"))
+                return true;
+            if (situation.leaderSafe && situation.leaderDistance > SoftLeashDistance(situation))
+                return MoveNearLeader(situation, "move near leader", false);
+            return false;
 
         case FriendIntent::CrowdControl:
             if (TryActions(CrowdControlActions(situation), "friend cc"))
@@ -408,11 +429,16 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
             return TryActions(PullActions(situation), "friend pull");
 
         case FriendIntent::DealDamage:
-            return TryActions(DamageActions(situation), "friend damage");
+            if (TryActions(DamageActions(situation), "friend damage"))
+                return true;
+            if (situation.partyInCombat && situation.leaderSafe && situation.leaderDistance > SoftLeashDistance(situation))
+                return MoveNearLeader(situation, "move near leader", false);
+            return false;
 
         case FriendIntent::FollowOrIdle:
             if (assignment == FriendAssignment::StayClose && situation.leaderGuid)
-                return TryActions({ "follow" }, "friend close");
+                return MoveNearLeader(situation, "move near leader", false);
+            ClearFriendMovement(false);
             SetResult(intent, "", FriendExecutionResult::IntentionalIdle);
             return false;
     }
@@ -496,6 +522,68 @@ bool FriendBotController::TryPrerequisites(Action* action, const std::string& so
     return executed;
 }
 
+float FriendBotController::SoftLeashDistance(const FriendSituation& situation) const
+{
+    float followRange = ai ? ai->GetRange("follow") : 10.0f;
+    if (situation.inDungeon)
+        return std::max(followRange * 1.5f, 18.0f);
+
+    return std::max(followRange * 2.0f, 30.0f);
+}
+
+float FriendBotController::HardLeashDistance(const FriendSituation& situation) const
+{
+    float followRange = ai ? ai->GetRange("follow") : 10.0f;
+    if (situation.inDungeon)
+        return std::max(followRange * 2.5f, 30.0f);
+
+    return std::max(followRange * 4.0f, 70.0f);
+}
+
+bool FriendBotController::MoveNearLeader(const FriendSituation& situation, const std::string& action, bool urgent)
+{
+    if (!ai || !ai->GetBot() || !situation.leaderGuid)
+        return false;
+
+    Player* bot = ai->GetBot();
+    Unit* leader = ai->GetGroupMaster();
+    if (!leader || leader->GetObjectGuid() != situation.leaderGuid)
+        leader = ai->GetUnit(situation.leaderGuid);
+
+    if (!leader || !leader->IsInWorld() || leader->GetMapId() != bot->GetMapId() ||
+        !ai->IsSafe(leader) || !ai->CanMove())
+        return false;
+
+    const float stopDistance = urgent ? std::max(ai->GetRange("follow") * 0.75f, 6.0f) : SoftLeashDistance(situation);
+    if (situation.leaderDistance <= stopDistance)
+    {
+        ClearFriendMovement(true);
+        SetResult(lastIntent, action, FriendExecutionResult::Done);
+        ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
+        return true;
+    }
+
+    ClearFriendMovement(false);
+    bot->GetMotionMaster()->MovePoint(leader->GetMapId(), leader->GetPositionX(),
+        leader->GetPositionY(), leader->GetPositionZ(), FORCED_MOVEMENT_RUN, true);
+    SetResult(lastIntent, action, FriendExecutionResult::Done);
+    ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
+    return true;
+}
+
+void FriendBotController::ClearFriendMovement(bool includePointMove)
+{
+    if (!ai || !ai->GetBot() || !ai->GetBot()->GetMotionMaster())
+        return;
+
+    MovementGeneratorType movementType = ai->GetBot()->GetMotionMaster()->GetCurrentMovementGeneratorType();
+    if (movementType == FOLLOW_MOTION_TYPE ||
+        (includePointMove && movementType == POINT_MOTION_TYPE && (lastAction == "move near leader" || lastAction == "come")))
+    {
+        ai->StopMoving();
+    }
+}
+
 void FriendBotController::SetResult(FriendIntent intent, const std::string& action, FriendExecutionResult result)
 {
     lastIntent = intent;
@@ -537,8 +625,11 @@ void FriendBotController::MaybeSayStatus(const FriendSituation& situation)
 
 void FriendBotController::ResetTemporaryAssignmentIfSatisfied(const FriendSituation& situation)
 {
-    if (assignment == FriendAssignment::ReturnToParty && situation.leaderSafe && situation.leaderDistance <= ai->GetRange("follow"))
+    if (assignment == FriendAssignment::ReturnToParty && situation.leaderSafe &&
+        situation.leaderDistance <= std::max(ai->GetRange("follow") * 0.75f, 6.0f))
+    {
         assignment = FriendAssignment::ParticipateWithParty;
+    }
 
     if (assignment == FriendAssignment::Recover &&
         !situation.inCombat &&
@@ -553,9 +644,6 @@ std::vector<std::string> FriendBotController::PositionActions(const FriendSituat
 
     if (situation.ranged || situation.healerish)
         AddActions(actions, { "move out of enemy contact", "flee with pet", "flee" });
-
-    if (situation.leaderSafe && situation.leaderDistance > ai->GetRange("follow"))
-        actions.push_back("follow");
 
     if (!situation.ranged)
         actions.push_back("set behind");

@@ -109,6 +109,10 @@ namespace ai
         bool TryActions(const std::vector<std::string>& names, const std::string& source);
         FriendExecutionResult TryAction(const std::string& name, const std::string& source, uint8 depth = 0);
         bool TryPrerequisites(Action* action, const std::string& source, uint8 depth);
+        float SoftLeashDistance(const FriendSituation& situation) const;
+        float HardLeashDistance(const FriendSituation& situation) const;
+        bool MoveNearLeader(const FriendSituation& situation, const std::string& action, bool urgent);
+        void ClearFriendMovement(bool includePointMove);
         void SetResult(FriendIntent intent, const std::string& action, FriendExecutionResult result);
         void MaybeSayStatus(const FriendSituation& situation);
         void ResetTemporaryAssignmentIfSatisfied(const FriendSituation& situation);
