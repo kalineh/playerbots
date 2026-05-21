@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Entities/ObjectGuid.h"
+#include "FriendAbilityCatalog.h"
 #include <ctime>
 #include <string>
 #include <vector>
@@ -111,8 +112,18 @@ namespace ai
         bool TryActions(const std::vector<std::string>& names, const std::string& source);
         FriendExecutionResult TryAction(const std::string& name, const std::string& source, uint8 depth = 0);
         bool TryPrerequisites(Action* action, const std::string& source, uint8 depth);
+        bool TryCatalogDamage(const FriendSituation& situation, const std::string& source);
+        bool TryCatalogHeal(const FriendSituation& situation, const std::string& source);
+        bool TryCatalogSupport(const FriendSituation& situation, const std::string& source);
+        bool TryCatalogCrowdControl(const FriendSituation& situation, const std::string& source);
+        bool TryCastAbility(const FriendAbility& ability, Unit* target, const std::string& source);
+        bool TryReachAbilityTarget(const FriendAbility& ability, Unit* target, const std::string& source);
+        Unit* GetDamageTarget(const FriendSituation& situation, bool prepare);
+        Unit* GetHealTarget(const FriendSituation& situation) const;
+        std::vector<Unit*> GetPartyTargets() const;
         bool ExecuteLoot(const FriendSituation& situation);
         bool PreferFreeDamage(const FriendSituation& situation) const;
+        bool IsTargetSetupAction(const std::string& name) const;
         float PreferredLeaderDistance(const FriendSituation& situation) const;
         float SoftLeashDistance(const FriendSituation& situation) const;
         float HardLeashDistance(const FriendSituation& situation) const;
@@ -149,5 +160,6 @@ namespace ai
         uint8 lastLowestPartyHealth = 100;
         std::string lastStatusLine;
         time_t manualAttackUntil = 0;
+        FriendAbilityCatalog abilityCatalog;
     };
 }

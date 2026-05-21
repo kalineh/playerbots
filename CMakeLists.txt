@@ -24,6 +24,8 @@ set(bots_PCH "${CMAKE_CURRENT_SOURCE_DIR}/botpch.h")
 #Base files
 file(GLOB Playerbot_Source ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/*.h)
     LIST(APPEND Playerbot_Source
+        ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/FriendAbilityCatalog.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/FriendAbilityCatalog.h
         ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/FriendBotController.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/FriendBotController.h
     )
