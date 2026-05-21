@@ -43,6 +43,16 @@ namespace
                 return false;
         }
     }
+
+    template <typename T>
+    T GetContextValue(AiObjectContext* context, const std::string& name, T fallback)
+    {
+        if (!context)
+            return fallback;
+
+        auto value = context->GetValue<T>(name);
+        return value ? value->Get() : fallback;
+    }
 }
 
 FriendBotController::FriendBotController(PlayerbotAI* ai) : ai(ai)
@@ -225,15 +235,15 @@ FriendSituation FriendBotController::BuildSituation()
 
     if (context)
     {
-        situation.hasAttackers = context->GetValue<bool>("has attackers")->Get();
-        situation.hasPossibleTargets = context->GetValue<bool>("has possible attack targets")->Get();
-        situation.attackersCount = context->GetValue<uint8>("attackers count")->Get();
-        situation.possibleTargetsCount = context->GetValue<uint8>("possible attack targets count")->Get();
-        situation.balance = context->GetValue<uint8>("balance percentage")->Get();
+        situation.hasAttackers = GetContextValue<bool>(context, "has attackers", false);
+        situation.hasPossibleTargets = GetContextValue<bool>(context, "has possible attack targets", false);
+        situation.attackersCount = GetContextValue<uint8>(context, "attackers count", 0);
+        situation.possibleTargetsCount = GetContextValue<uint8>(context, "possible attack targets count", 0);
+        situation.balance = GetContextValue<uint8>(context, "balance", 100);
 
-        Unit* target = context->GetValue<Unit*>("current target")->Get();
+        Unit* target = GetContextValue<Unit*>(context, "current target", nullptr);
         if (!target)
-            target = context->GetValue<Unit*>("dps target")->Get();
+            target = GetContextValue<Unit*>(context, "dps target", nullptr);
         if (target && target->IsInWorld() && target->GetMapId() == bot->GetMapId() && !sServerFacade.UnitIsDead(target))
         {
             situation.hasTarget = true;
