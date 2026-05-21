@@ -90,7 +90,7 @@ namespace
             command == "normal" || command == "reset" || command == "act normal" ||
             command == "stay close" || command == "close" ||
             command == "recover" || command == "drink" ||
-            command == "attack" || command == "report" ||
+            command == "attack" || command == "summon" || command == "report" ||
             command == "verbose" || command == "intent" ||
             command == "debug" || command == "silent";
     }
@@ -135,6 +135,56 @@ void PacketHandlingHelper::Clear()
 
     while (!queue.empty())
         queue.pop();
+
+    m_botPacketMutex.unlock();
+}
+
+void PacketHandlingHelper::HandleFriendMode(PlayerbotAI* ai)
+{
+    if (!m_botPacketMutex.try_lock())
+        return;
+
+    std::stack<WorldPacket> delayed;
+
+    while (!queue.empty())
+    {
+        WorldPacket packet = queue.top();
+        const uint16 opcode = packet.GetOpcode();
+        bool handled = false;
+        bool allowed = false;
+
+        if (ai)
+        {
+            if (opcode == SMSG_LOOT_RESPONSE)
+            {
+                allowed = true;
+                handled = ai->DoSpecificAction("store loot", Event("loot response", packet), true);
+            }
+            else if (opcode == SMSG_LOOT_START_ROLL)
+            {
+                allowed = true;
+                ai->DoSpecificAction("loot start roll", Event("loot start roll", packet), true);
+                handled = true;
+            }
+            else if (opcode == SMSG_SUMMON_REQUEST)
+            {
+                allowed = true;
+                handled = ai->DoSpecificAction("accept summon", Event("summon request", packet), true);
+            }
+            else if (opcode == SMSG_RESURRECT_REQUEST)
+            {
+                allowed = true;
+                handled = ai->DoSpecificAction("accept resurrect", Event("resurrect request", packet), true);
+            }
+        }
+
+        if (allowed && !handled && delay[opcode])
+            delayed.push(packet);
+
+        queue.pop();
+    }
+
+    queue = delayed;
 
     m_botPacketMutex.unlock();
 }
@@ -1193,25 +1243,33 @@ void PlayerbotAI::UpdateAIInternal(uint32 elapsed, bool minimal)
 
     ExternalEventHelper helper(aiObjectContext);
 
-    // chat replies
-    std::list<ChatQueuedReply> delayedResponses;
-    while (!chatReplies.empty())
+    if (friendModeEnabled)
     {
-        ChatQueuedReply holder = chatReplies.front();
-        time_t checkTime = holder.m_time;
-        if (checkTime && time(0) < checkTime)
-        {
-            delayedResponses.push_back(holder);
+        while (!chatReplies.empty())
             chatReplies.pop();
-            continue;
-        }
-        ChatReplyAction::ChatReplyDo(bot, holder.m_type, holder.m_guid1, holder.m_guid2, holder.m_msg, holder.m_chanName, holder.m_name);
-        chatReplies.pop();
     }
-
-    for (std::list<ChatQueuedReply>::iterator i = delayedResponses.begin(); i != delayedResponses.end(); ++i)
+    else
     {
-        chatReplies.push(*i);
+        // chat replies
+        std::list<ChatQueuedReply> delayedResponses;
+        while (!chatReplies.empty())
+        {
+            ChatQueuedReply holder = chatReplies.front();
+            time_t checkTime = holder.m_time;
+            if (checkTime && time(0) < checkTime)
+            {
+                delayedResponses.push_back(holder);
+                chatReplies.pop();
+                continue;
+            }
+            ChatReplyAction::ChatReplyDo(bot, holder.m_type, holder.m_guid1, holder.m_guid2, holder.m_msg, holder.m_chanName, holder.m_name);
+            chatReplies.pop();
+        }
+
+        for (std::list<ChatQueuedReply>::iterator i = delayedResponses.begin(); i != delayedResponses.end(); ++i)
+        {
+            chatReplies.push(*i);
+        }
     }
 
     // logout if logout timer is ready or if instant logout is possible
@@ -1253,7 +1311,7 @@ void PlayerbotAI::UpdateAIInternal(uint32 elapsed, bool minimal)
 
     if (friendModeEnabled)
     {
-        botOutgoingPacketHandlers.Clear();
+        botOutgoingPacketHandlers.HandleFriendMode(this);
         masterIncomingPacketHandlers.Clear();
         masterOutgoingPacketHandlers.Clear();
     }
@@ -1645,6 +1703,9 @@ void PlayerbotAI::HandleBotOutgoingPacket(const WorldPacket& packet)
     case SMSG_MESSAGECHAT: // do not react to self or if not ready to reply
     {
         if (!AllowActivity())
+            return;
+
+        if (friendModeEnabled)
             return;
 
         WorldPacket p(packet);

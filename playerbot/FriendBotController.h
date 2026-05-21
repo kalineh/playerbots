@@ -118,6 +118,8 @@ namespace ai
         bool TryCatalogCrowdControl(const FriendSituation& situation, const std::string& source);
         bool TryCastAbility(const FriendAbility& ability, Unit* target, const std::string& source);
         bool TryReachAbilityTarget(const FriendAbility& ability, Unit* target, const std::string& source);
+        bool MoveToDamageTarget(const FriendSituation& situation, const std::string& action);
+        bool PrefersMeleeDamage(const FriendSituation& situation) const;
         Unit* GetDamageTarget(const FriendSituation& situation, bool prepare);
         Unit* GetHealTarget(const FriendSituation& situation) const;
         std::vector<Unit*> GetPartyTargets() const;

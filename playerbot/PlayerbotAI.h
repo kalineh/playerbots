@@ -15,6 +15,7 @@
 #include "RandomPlayerbotMgr.h"
 
 class Player;
+class PlayerbotAI;
 class PlayerbotMgr;
 class ChatHandler;
 
@@ -327,6 +328,7 @@ class PacketHandlingHelper
 public:
     void AddHandler(uint16 opcode, std::string handler, bool shouldDelay = false);
     void Handle(ExternalEventHelper &helper);
+    void HandleFriendMode(PlayerbotAI* ai);
     void Clear();
     void AddPacket(const WorldPacket& packet);
 

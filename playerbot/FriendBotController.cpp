@@ -194,6 +194,15 @@ bool FriendBotController::HandleCommand(const std::string& command, Player* requ
         return true;
     }
 
+    if (cmd == "summon")
+    {
+        if (ai && requester && ai->DoSpecificAction("summon", Event("friend command", "", requester), true))
+            response = "Summoning.";
+        else
+            response = "I can't summon right now.";
+        return true;
+    }
+
     if (cmd == "report")
     {
         Report(requester);
@@ -523,6 +532,8 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
         case FriendIntent::DealDamage:
             if (TryCatalogDamage(situation, "friend damage"))
                 return true;
+            if (PrefersMeleeDamage(situation) && MoveToDamageTarget(situation, "move to melee"))
+                return true;
             if (TryActions(DamageActions(situation), "friend damage"))
                 return true;
             if (situation.partyInCombat && situation.leaderSafe && situation.leaderDistance > SoftLeashDistance(situation))
@@ -717,31 +728,109 @@ Unit* FriendBotController::GetHealTarget(const FriendSituation& situation) const
 
 bool FriendBotController::TryReachAbilityTarget(const FriendAbility& ability, Unit* target, const std::string& source)
 {
+    (void)source;
+
     if (!ai || !ai->GetAiObjectContext() || !target || !ai->CanMove())
+        return false;
+
+    Player* bot = ai->GetBot();
+    if (!bot || !IsUsableUnit(ai, target) || !bot->GetMotionMaster())
+        return false;
+
+    const bool hostile = IsHostileTarget(ai, target);
+    const bool friendly = IsFriendlyTarget(ai, target);
+    if (!hostile && !friendly)
         return false;
 
     AiObjectContext* context = ai->GetAiObjectContext();
     SpellCastResult checkResult = SPELL_CAST_OK;
-    if (!ai->CanCastSpell(ability.spellId, target, 0, true, nullptr, true, false, false, &checkResult))
+    bool canEventuallyCast = ai->CanCastSpell(ability.spellId, target, 0, true, nullptr, true, false, false, &checkResult);
+    if (!canEventuallyCast && hostile && ability.Has(FRIEND_ABILITY_DAMAGE) && ability.maxRange <= 0.0f)
+        canEventuallyCast = true;
+
+    if (!canEventuallyCast)
         return false;
 
-    std::string reachAction;
-    if (IsHostileTarget(ai, target))
+    if (hostile)
     {
         context->GetValue<Unit*>("current target")->Set(target);
-        ai->GetBot()->SetSelectionGuid(target->GetObjectGuid());
-        reachAction = ability.Has(FRIEND_ABILITY_MELEE) ? "reach melee" : "reach spell::" + ability.name + "::current target";
+        bot->SetSelectionGuid(target->GetObjectGuid());
+    }
+
+    float desiredDistance = sPlayerbotAIConfig.spellDistance;
+    if (hostile && (ability.Has(FRIEND_ABILITY_MELEE) || ability.maxRange <= 0.0f))
+    {
+        desiredDistance = std::max(sPlayerbotAIConfig.meleeDistance, sPlayerbotAIConfig.contactDistance);
+    }
+    else if (ability.maxRange > 0.0f)
+    {
+        desiredDistance = std::max(sPlayerbotAIConfig.contactDistance, ability.maxRange - sPlayerbotAIConfig.contactDistance);
     }
     else
     {
-        Unit* partyHealTarget = GetContextValue<Unit*>(context, "party member to heal", nullptr);
-        if (partyHealTarget != target)
-            return false;
-
-        reachAction = "reach spell::" + ability.name + "::party member to heal";
+        desiredDistance = friendly ? ai->GetRange("follow") : std::max(sPlayerbotAIConfig.meleeDistance, sPlayerbotAIConfig.contactDistance);
     }
 
-    return TryAction(reachAction, source) == FriendExecutionResult::Done;
+    const float distance = sServerFacade.GetDistance2d(bot, target);
+    if (distance <= desiredDistance && bot->IsWithinLOSInMap(target, true))
+        desiredDistance = std::max(sPlayerbotAIConfig.contactDistance, desiredDistance * 0.5f);
+    else if (distance <= desiredDistance)
+        desiredDistance = std::max(sPlayerbotAIConfig.contactDistance, distance * 0.5f);
+
+    bot->GetMotionMaster()->MoveChase(target, desiredDistance, bot->GetAngle(target));
+    SetResult(lastIntent, "move for spell:" + ability.name, FriendExecutionResult::Done);
+    ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
+    return true;
+}
+
+bool FriendBotController::MoveToDamageTarget(const FriendSituation& situation, const std::string& action)
+{
+    if (!ai || !ai->GetBot() || !ai->GetAiObjectContext() || !ai->CanMove())
+        return false;
+
+    Unit* target = GetDamageTarget(situation, true);
+    if (!IsHostileTarget(ai, target))
+        return false;
+
+    Player* bot = ai->GetBot();
+    if (!bot->GetMotionMaster())
+        return false;
+
+    const float desiredDistance = std::max(sPlayerbotAIConfig.meleeDistance, sPlayerbotAIConfig.contactDistance);
+    const float distance = sServerFacade.GetDistance2d(bot, target);
+    if (distance <= desiredDistance && bot->IsWithinLOSInMap(target, true))
+        return false;
+
+    AiObjectContext* context = ai->GetAiObjectContext();
+    context->GetValue<Unit*>("current target")->Set(target);
+    bot->SetSelectionGuid(target->GetObjectGuid());
+    bot->GetMotionMaster()->MoveChase(target, desiredDistance, bot->GetAngle(target));
+    SetResult(lastIntent, action, FriendExecutionResult::Done);
+    ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
+    return true;
+}
+
+bool FriendBotController::PrefersMeleeDamage(const FriendSituation& situation) const
+{
+    if (!ai || !ai->GetBot())
+        return false;
+
+    switch (ai->GetBot()->getClass())
+    {
+        case CLASS_WARRIOR:
+        case CLASS_ROGUE:
+        case CLASS_PALADIN:
+            return true;
+        case CLASS_DRUID:
+        case CLASS_SHAMAN:
+            return !situation.ranged || situation.tankish;
+#ifdef MANGOSBOT_TWO
+        case CLASS_DEATH_KNIGHT:
+            return true;
+#endif
+        default:
+            return false;
+    }
 }
 
 bool FriendBotController::TryCastAbility(const FriendAbility& ability, Unit* target, const std::string& source)
