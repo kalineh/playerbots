@@ -194,6 +194,8 @@ Movement should have hysteresis. Do not move just because a position is slightly
 - command requires return/hold/close behavior;
 - dungeon safety requires falling back.
 
+Movement safety is a hard invariant. Friend mode should generate candidate positions, validate pathing/ground/height/leash/hazard safety, and only then move. Do not use blind vector movement for flee/spread/reposition decisions. If no safe candidate exists, hold position, return toward the leader, or choose a non-movement action.
+
 This layer should prevent oscillation like running into melee for one swing, then running out for a spell.
 
 ## Intent Ranking
