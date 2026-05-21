@@ -174,7 +174,16 @@ namespace ai
             Unit* target = GetTarget();
             if (target)
             {
-                const float distance = bot->GetDistance(target, true, DIST_CALC_COMBAT_REACH);
+                float distance = bot->GetDistance(target, true, DIST_CALC_COMBAT_REACH);
+                const float desiredDistance = sPlayerbotAIConfig.meleeDistance + sPlayerbotAIConfig.contactDistance;
+                if (distance <= desiredDistance)
+                {
+                    float originalRange = range;
+                    range = desiredDistance + sPlayerbotAIConfig.contactDistance;
+                    bool result = ReachTargetAction::Execute(event);
+                    range = originalRange;
+                    return result;
+                }
                 if (distance <= range)
                     return true;
             }

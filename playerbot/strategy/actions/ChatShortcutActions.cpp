@@ -281,14 +281,8 @@ bool FriendModeChatShortcutAction::Execute(Event& event)
         ai->HandleFriendCommand(param, requester, response);
     }
 
-<<<<<<< HEAD
-    ai->ChangeStrategy("+friend", BotState::BOT_STATE_ALL);
-    ai->TellPlayerNoFacing(requester, "Friend mode activated. (v3)");
-    if (wasFriendMode && wantReport)
-=======
     ai->TellPlayerNoFacing(requester, response.empty() ? "Friend mode activated." : response);
     if (wantReport)
->>>>>>> 8170c8e09ffe08c56c84d4e21c4563d53dfa3675
     {
         ai->ReportFriendModeStatus(requester);
     }

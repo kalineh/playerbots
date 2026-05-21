@@ -8,6 +8,5 @@ void RangedCombatStrategy::InitCombatTriggers(std::list<TriggerNode*> &triggers)
 {
     triggers.push_back(new TriggerNode(
         "enemy too close for spell",
-        NextAction::array(0, new NextAction("melee", ACTION_NORMAL),
-                             new NextAction("flee", ACTION_MOVE), NULL)));
+        NextAction::array(0, new NextAction("flee", ACTION_MOVE), NULL)));
 }
