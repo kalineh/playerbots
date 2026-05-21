@@ -1419,71 +1419,54 @@ std::vector<std::string> FriendBotController::DamageActions(const FriendSituatio
         case CLASS_WARRIOR:
             AddActions(actions, {
                 "pummel", "shield bash", "charge", "intercept", "bloodrage", "battle shout",
-                "thunder clap", "demoralizing shout", "rend", "mortal strike", "bloodthirst",
-                "shield slam", "revenge", "sunder armor", "heroic strike", "execute", "cleave", "whirlwind"
+                "demoralizing shout"
             });
             break;
         case CLASS_PALADIN:
             AddActions(actions, {
-                "hammer of justice", "avenger's shield", "holy shield", "seal of command", "seal of righteousness",
-                "seal of wisdom", "judgement", "judgement of light", "judgement of wisdom", "crusader strike",
-                "divine storm", "holy shock", "exorcism", "hammer of wrath", "consecration"
+                "hammer of justice", "holy shield", "seal of command", "seal of righteousness",
+                "seal of wisdom", "judgement", "judgement of light", "judgement of wisdom", "consecration"
             });
             break;
         case CLASS_HUNTER:
             AddActions(actions, {
-                "kill command", "hunter's mark", "serpent sting", "chimera shot", "explosive shot",
-                "arcane shot", "multi-shot", "steady shot", "aimed shot", "auto shot",
-                "raptor strike", "wing clip", "mend pet"
+                "kill command", "hunter's mark", "auto shot", "mend pet"
             });
             break;
         case CLASS_ROGUE:
             AddActions(actions, {
-                "kick", "slice and dice", "riposte", "cheap shot", "kidney shot", "rupture",
-                "sinister strike", "mutilate", "hemorrhage", "backstab", "ghostly strike",
-                "eviscerate", "blade flurry", "adrenaline rush"
+                "kick", "slice and dice", "cheap shot", "kidney shot", "blade flurry", "adrenaline rush"
             });
             break;
         case CLASS_PRIEST:
             AddActions(actions, {
-                "silence", "shadow word: pain", "vampiric touch", "devouring plague",
-                "mind blast", "mind flay", "holy fire", "smite", "shadow word: death",
-                "shadowfiend", "vampiric embrace"
+                "silence", "shadowfiend", "vampiric embrace"
             });
             break;
         case CLASS_SHAMAN:
             AddActions(actions, {
-                "wind shear", "flame shock", "earth shock", "frost shock", "stormstrike", "lava lash",
-                "lightning bolt", "chain lightning", "searing totem", "fire nova", "heroism", "bloodlust"
+                "wind shear", "searing totem", "fire nova", "heroism", "bloodlust"
             });
             break;
         case CLASS_MAGE:
             AddActions(actions, {
-                "counterspell", "living bomb", "frostbolt", "fireball", "fire blast", "scorch",
-                "arcane barrage", "arcane blast", "arcane missiles", "ice lance",
-                "icy veins", "combustion", "mirror image"
+                "counterspell", "icy veins", "combustion", "mirror image", "summon water elemental"
             });
             break;
         case CLASS_WARLOCK:
             AddActions(actions, {
-                "spell lock", "corruption", "curse of agony", "curse of weakness", "immolate",
-                "unstable affliction", "siphon life", "shadow bolt", "incinerate", "conflagrate",
-                "drain life", "shadowburn", "death coil"
+                "spell lock", "curse of weakness", "death coil"
             });
             break;
         case CLASS_DRUID:
             AddActions(actions, {
-                "faerie fire", "faerie fire (feral)", "moonfire", "insect swarm", "wrath", "starfire",
-                "mangle (bear)", "lacerate", "maul", "swipe (bear)", "demoralizing roar",
-                "mangle (cat)", "rake", "claw", "shred", "rip", "ferocious bite"
+                "faerie fire", "faerie fire (feral)", "demoralizing roar"
             });
             break;
 #ifdef MANGOSBOT_TWO
         case CLASS_DEATH_KNIGHT:
             AddActions(actions, {
-                "mind freeze", "icy touch", "plague strike", "blood strike", "heart strike",
-                "scourge strike", "obliterate", "frost strike", "death coil", "death strike",
-                "pestilence", "blood boil", "death and decay", "horn of winter"
+                "mind freeze", "death grip", "horn of winter"
             });
             break;
 #endif
