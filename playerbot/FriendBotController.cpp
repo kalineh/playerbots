@@ -1169,6 +1169,12 @@ bool FriendBotController::TryFreeDamage(const FriendSituation& situation, const 
     if (TryDruidCombatForm(situation, source))
         return true;
 
+    if (ai && ai->GetBot() && ai->GetBot()->getClass() == CLASS_WARRIOR && GetDamageTarget(situation, true))
+    {
+        if (TryActions({ "charge", "intercept" }, source))
+            return true;
+    }
+
     if (PrefersMeleeDamage(situation) && MoveToDamageTarget(situation, "move to melee"))
         return true;
 
@@ -1437,6 +1443,13 @@ bool FriendBotController::TryCastAbility(const FriendAbility& ability, Unit* tar
         (ability.Has(FRIEND_ABILITY_CC) && !ability.Has(FRIEND_ABILITY_DAMAGE) && !ability.Has(FRIEND_ABILITY_DIRECT_DAMAGE));
     if (duplicateAuraSensitive && ai->HasAura(ability.spellId, target, ability.Has(FRIEND_ABILITY_DOT) || ability.Has(FRIEND_ABILITY_CC)))
         return false;
+
+    if (IsHostileTarget(ai, target) && ability.Has(FRIEND_ABILITY_MELEE))
+    {
+        const float desiredDistance = std::max(sPlayerbotAIConfig.meleeDistance, sPlayerbotAIConfig.contactDistance);
+        if (sServerFacade.GetDistance2d(ai->GetBot(), target) > desiredDistance || !ai->GetBot()->IsWithinLOSInMap(target, true))
+            return TryReachAbilityTarget(ability, target, source);
+    }
 
     SpellCastResult checkResult = SPELL_CAST_OK;
     if (!ai->CanCastSpell(ability.spellId, target, 0, true, nullptr, false, false, false, &checkResult))
