@@ -526,7 +526,7 @@ FriendExecutionResult FriendBotController::TryAction(const std::string& name, co
         return FriendExecutionResult::BlockedNotUseful;
     }
 
-    if (TryPrerequisites(action, source, depth))
+    if (TryPrerequisites(action, source, depth) && !action->isPossible())
         return FriendExecutionResult::Done;
 
     if (!action->isPossible())
@@ -557,8 +557,15 @@ bool FriendBotController::TryPrerequisites(Action* action, const std::string& so
     bool executed = false;
     for (uint8 i = 0; prerequisites[i]; ++i)
     {
-        if (TryAction(prerequisites[i]->getName(), source, depth + 1) == FriendExecutionResult::Done)
+        const std::string prerequisiteName = prerequisites[i]->getName();
+        if (TryAction(prerequisiteName, source, depth + 1) == FriendExecutionResult::Done)
         {
+            if (prerequisiteName.find("reach ") == 0 && ai && ai->GetBot() &&
+                !sServerFacade.isMoving(ai->GetBot()) && !ai->GetBot()->IsNonMeleeSpellCasted(true))
+            {
+                continue;
+            }
+
             executed = true;
             break;
         }
@@ -615,15 +622,13 @@ bool FriendBotController::ExecuteLoot(const FriendSituation& situation)
     return TryAction("release loot", "friend loot") == FriendExecutionResult::Done;
 }
 
-bool FriendBotController::ShouldConserveMana(const FriendSituation& situation) const
+bool FriendBotController::PreferFreeDamage(const FriendSituation& situation) const
 {
     if (!ai || !ai->GetBot() || !ai->GetBot()->HasMana())
         return false;
 
-    if (situation.botMana >= 70)
-        return false;
-
-    if (situation.targetIsElite || situation.inDungeon || situation.possibleTargetsCount > 1)
+    if (situation.targetIsElite || situation.inDungeon || situation.possibleTargetsCount > 1 ||
+        situation.botMana > sPlayerbotAIConfig.mediumMana)
         return false;
 
     if (situation.lowestPartyHealth < sPlayerbotAIConfig.almostFullHealth ||
@@ -945,9 +950,9 @@ std::vector<std::string> FriendBotController::DamageActions(const FriendSituatio
         actions.push_back("attack rti target");
     AddActions(actions, { "dps assist", "attack least hp target" });
 
-    const bool conserveMana = ShouldConserveMana(situation);
-    if (conserveMana)
-        actions.push_back("shoot");
+    const bool preferFreeDamage = PreferFreeDamage(situation);
+    if (preferFreeDamage)
+        AddActions(actions, { "shoot", "melee", "attack" });
 
     switch (ai->GetBot()->getClass())
     {
@@ -980,18 +985,11 @@ std::vector<std::string> FriendBotController::DamageActions(const FriendSituatio
             });
             break;
         case CLASS_PRIEST:
-            if (conserveMana)
-            {
-                AddActions(actions, { "shadow word: pain", "shoot", "smite" });
-            }
-            else
-            {
-                AddActions(actions, {
-                    "silence", "shadow word: pain", "vampiric touch", "devouring plague",
-                    "mind blast", "mind flay", "holy fire", "smite", "shadow word: death",
-                    "shadowfiend", "vampiric embrace"
-                });
-            }
+            AddActions(actions, {
+                "silence", "shadow word: pain", "vampiric touch", "devouring plague",
+                "mind blast", "mind flay", "holy fire", "smite", "shadow word: death",
+                "shadowfiend", "vampiric embrace"
+            });
             break;
         case CLASS_SHAMAN:
             AddActions(actions, {
@@ -1041,7 +1039,8 @@ std::vector<std::string> FriendBotController::DamageActions(const FriendSituatio
             "army of the dead", "summon gargoyle"
         });
 
-    AddActions(actions, { "shoot", "melee", "attack" });
+    if (!preferFreeDamage)
+        AddActions(actions, { "shoot", "melee", "attack" });
     return actions;
 }
 
