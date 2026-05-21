@@ -605,7 +605,11 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
             return TryActions(DamageActions(situation), "friend damage");
 
         case FriendIntent::SaveSelf:
-            return TryActions(SelfPreservationActions(situation), "friend self");
+            if (TryActions(SelfPreservationActions(situation), "friend self"))
+                return true;
+            if (!situation.hasAttackers && (situation.inCombat || situation.partyInCombat || situation.hasTarget))
+                return TryFallbackCombat(situation, "friend self fallback");
+            return false;
 
         case FriendIntent::SavePartyMember:
             if (TryCatalogHeal(situation, "friend heal"))
@@ -613,16 +617,7 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
             if (TryActions(HealActions(situation), "friend heal"))
                 return true;
             if (situation.inCombat || situation.partyInCombat)
-            {
-                if (ShouldConserveDamageMana(situation))
-                    return TryFreeDamage(situation, "friend free damage");
-                if (TryCatalogDamage(situation, "friend damage"))
-                    return true;
-                if (TryActions(DamageActions(situation), "friend damage"))
-                    return true;
-                if (situation.leaderSafe && situation.leaderDistance > SoftLeashDistance(situation))
-                    return MoveNearLeader(situation, "move near leader", false);
-            }
+                return TryFallbackCombat(situation, "friend party fallback");
             return false;
 
         case FriendIntent::BuffOrCureParty:
@@ -910,16 +905,7 @@ bool FriendBotController::TryReachAbilityTarget(const FriendAbility& ability, Un
         desiredDistance = friendly ? ai->GetRange("follow") : std::max(sPlayerbotAIConfig.meleeDistance, sPlayerbotAIConfig.contactDistance);
     }
 
-    const float distance = sServerFacade.GetDistance2d(bot, target);
-    if (distance <= desiredDistance && bot->IsWithinLOSInMap(target, true))
-        desiredDistance = std::max(sPlayerbotAIConfig.contactDistance, desiredDistance * 0.5f);
-    else if (distance <= desiredDistance)
-        desiredDistance = std::max(sPlayerbotAIConfig.contactDistance, distance * 0.5f);
-
-    bot->GetMotionMaster()->MoveChase(target, desiredDistance, bot->GetAngle(target));
-    SetResult(lastIntent, "move for spell:" + ability.name, FriendExecutionResult::Done);
-    ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
-    return true;
+    return MoveToUnitRange(target, desiredDistance, "move for spell:" + ability.name);
 }
 
 bool FriendBotController::TryFreeDamage(const FriendSituation& situation, const std::string& source)
@@ -931,6 +917,23 @@ bool FriendBotController::TryFreeDamage(const FriendSituation& situation, const 
         return true;
 
     return TryActions({ "shoot", "melee", "attack" }, source);
+}
+
+bool FriendBotController::TryFallbackCombat(const FriendSituation& situation, const std::string& source)
+{
+    if (TryFreeDamage(situation, source))
+        return true;
+
+    if (TryCatalogDamage(situation, "friend damage"))
+        return true;
+
+    if (TryActions(DamageActions(situation), "friend damage"))
+        return true;
+
+    if (situation.leaderSafe && situation.leaderDistance > SoftLeashDistance(situation))
+        return MoveNearLeader(situation, "move near leader", false);
+
+    return false;
 }
 
 bool FriendBotController::TryDruidCombatForm(const FriendSituation& situation, const std::string& source)
@@ -983,7 +986,63 @@ bool FriendBotController::MoveToDamageTarget(const FriendSituation& situation, c
     AiObjectContext* context = ai->GetAiObjectContext();
     context->GetValue<Unit*>("current target")->Set(target);
     bot->SetSelectionGuid(target->GetObjectGuid());
-    bot->GetMotionMaster()->MoveChase(target, desiredDistance, bot->GetAngle(target));
+    return MoveToUnitRange(target, desiredDistance, action);
+}
+
+bool FriendBotController::MoveToUnitRange(Unit* target, float desiredDistance, const std::string& action)
+{
+    if (!ai || !ai->GetBot() || !target || !ai->CanMove())
+        return false;
+
+    Player* bot = ai->GetBot();
+    if (!bot->GetMotionMaster() || !IsUsableUnit(ai, target))
+        return false;
+
+    if (IsMovingForAction(ai, lastAction, action))
+    {
+        SetResult(lastIntent, action, FriendExecutionResult::Done);
+        ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
+        return true;
+    }
+
+    desiredDistance = std::max(sPlayerbotAIConfig.contactDistance, desiredDistance);
+    const float distance = sServerFacade.GetDistance2d(bot, target);
+    if (distance <= desiredDistance && bot->IsWithinLOSInMap(target, true))
+        desiredDistance = std::max(sPlayerbotAIConfig.contactDistance, desiredDistance * 0.5f);
+    else if (distance <= desiredDistance)
+        desiredDistance = std::max(sPlayerbotAIConfig.contactDistance, distance * 0.5f);
+
+    float dx = bot->GetPositionX() - target->GetPositionX();
+    float dy = bot->GetPositionY() - target->GetPositionY();
+    float length = std::sqrt(dx * dx + dy * dy);
+    if (length < 0.1f)
+    {
+        const float angle = target->GetAngle(bot);
+        dx = std::cos(angle);
+        dy = std::sin(angle);
+    }
+    else
+    {
+        dx /= length;
+        dy /= length;
+    }
+
+    float x = target->GetPositionX() + dx * desiredDistance;
+    float y = target->GetPositionY() + dy * desiredDistance;
+    float z = target->GetPositionZ();
+    target->UpdateGroundPositionZ(x, y, z);
+
+    WorldPosition from(bot);
+    WorldPosition to(target->GetMapId(), x, y, z);
+    if (!from.canPathTo(to, bot) || !bot->IsWithinLOS(x, y, z + bot->GetCollisionHeight(), true))
+    {
+        bot->GetMotionMaster()->MoveChase(target, desiredDistance, bot->GetAngle(target));
+    }
+    else
+    {
+        bot->GetMotionMaster()->MovePoint(target->GetMapId(), x, y, z, FORCED_MOVEMENT_RUN, true);
+    }
+
     SetResult(lastIntent, action, FriendExecutionResult::Done);
     ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
     return true;
@@ -1261,6 +1320,14 @@ bool FriendBotController::TryCatalogSupport(const FriendSituation& situation, co
     {
         if (!ability.Has(FRIEND_ABILITY_BUFF_CORE) || ability.Has(FRIEND_ABILITY_BUFF_SITUATIONAL) ||
             ability.Has(FRIEND_ABILITY_HEAL) || ability.Has(FRIEND_ABILITY_DAMAGE) || ability.Has(FRIEND_ABILITY_CURE))
+            continue;
+
+        if (ability.lowerName.find("battle shout") != std::string::npos ||
+            ability.lowerName.find("commanding shout") != std::string::npos ||
+            ability.lowerName.find("horn of winter") != std::string::npos)
+            continue;
+
+        if (ability.powerType != POWER_MANA && (ability.manaCost > 0 || ability.manaCostPercent > 0))
             continue;
 
         for (Unit* target : party)

@@ -137,8 +137,10 @@ namespace ai
         bool TryCastAbility(const FriendAbility& ability, Unit* target, const std::string& source);
         bool TryReachAbilityTarget(const FriendAbility& ability, Unit* target, const std::string& source);
         bool TryFreeDamage(const FriendSituation& situation, const std::string& source);
+        bool TryFallbackCombat(const FriendSituation& situation, const std::string& source);
         bool TryDruidCombatForm(const FriendSituation& situation, const std::string& source);
         bool MoveToDamageTarget(const FriendSituation& situation, const std::string& action);
+        bool MoveToUnitRange(Unit* target, float desiredDistance, const std::string& action);
         bool PrefersMeleeDamage(const FriendSituation& situation) const;
         bool ShouldConserveDamageMana(const FriendSituation& situation) const;
         bool IsLowPressureFight(const FriendSituation& situation) const;
