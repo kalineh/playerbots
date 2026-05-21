@@ -143,7 +143,7 @@ namespace ai
         uint8 lastHealth = 100;
         uint8 lastMana = 100;
         uint8 lastLowestPartyHealth = 100;
-        time_t lastBarkTime = 0;
+        std::string lastStatusLine;
         time_t manualAttackUntil = 0;
     };
 }

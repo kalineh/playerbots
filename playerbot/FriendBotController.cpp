@@ -72,7 +72,7 @@ void FriendBotController::Reset()
     if (ai && ai->GetBot() && ai->GetBot()->GetMaxPower(POWER_MANA) > 0)
         lastMana = ai->GetManaPercent();
     lastLowestPartyHealth = 100;
-    lastBarkTime = 0;
+    lastStatusLine.clear();
     manualAttackUntil = 0;
 }
 
@@ -609,17 +609,6 @@ void FriendBotController::MaybeSayStatus(const FriendSituation& situation)
     if (!ai || verbosity == FriendVerbosity::Silent)
         return;
 
-    time_t now = time(nullptr);
-    uint32 delay = verbosity == FriendVerbosity::Debug ? 4 : 10;
-    if (now < lastBarkTime + delay)
-        return;
-
-    lastBarkTime = now;
-
-    Player* master = ai->GetMaster();
-    if (!master)
-        return;
-
     std::ostringstream out;
     out << "friend intent: " << IntentName(lastIntent);
     out << " -> " << (lastAction.empty() ? ResultName(lastResult) : lastAction);
@@ -627,13 +616,30 @@ void FriendBotController::MaybeSayStatus(const FriendSituation& situation)
     {
         out << " [" << ResultName(lastResult);
         out << ", hp " << static_cast<uint32>(situation.botHealth) << "%";
+        out << " (" << static_cast<int32>(situation.botHealthDelta) << ")";
         out << ", mana " << static_cast<uint32>(situation.botMana) << "%";
         out << ", party " << static_cast<uint32>(situation.lowestPartyHealth) << "%";
+        out << " (" << static_cast<int32>(situation.lowestPartyHealthDelta) << ")";
+        out << ", combat " << (situation.inCombat ? "self" : "no");
+        out << "/" << (situation.partyInCombat ? "party" : "no");
+        out << ", threat " << (situation.hasAttackers ? "yes" : "no");
+        out << ", leader " << static_cast<uint32>(situation.leaderDistance);
+        out << ", target " << static_cast<uint32>(situation.targetDistance);
         out << ", " << BalanceName(situation.balance);
         out << ", targets " << static_cast<uint32>(situation.possibleTargetsCount) << "]";
     }
 
-    ai->TellPlayerNoFacing(master, out.str(), PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
+    std::string statusLine = out.str();
+    if (statusLine == lastStatusLine)
+        return;
+
+    lastStatusLine = statusLine;
+
+    Player* master = ai->GetMaster();
+    if (!master)
+        return;
+
+    ai->TellPlayerNoFacing(master, statusLine, PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
 }
 
 void FriendBotController::ResetTemporaryAssignmentIfSatisfied(const FriendSituation& situation)
