@@ -23,6 +23,11 @@ set(bots_PCH "${CMAKE_CURRENT_SOURCE_DIR}/botpch.h")
 
 #Base files
 file(GLOB Playerbot_Source ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/*.h)
+    LIST(APPEND Playerbot_Source
+        ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/FriendBotController.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/FriendBotController.h
+    )
+    LIST(REMOVE_DUPLICATES Playerbot_Source)
     source_group("Player Bot" FILES ${Playerbot_Source})
 
 file(GLOB AHbot_Source ${CMAKE_CURRENT_SOURCE_DIR}/ahbot/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/ahbot/*.h)
