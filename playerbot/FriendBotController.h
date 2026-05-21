@@ -11,6 +11,8 @@ class Unit;
 
 namespace ai
 {
+    class Action;
+
     enum class FriendAssignment : uint8
     {
         ParticipateWithParty,
@@ -32,9 +34,13 @@ namespace ai
         FollowOrIdle,
         ReturnToParty,
         HoldPosition,
+        ImprovePosition,
         RecoverResources,
         SaveSelf,
         SavePartyMember,
+        BuffOrCureParty,
+        CrowdControl,
+        PullWithParty,
         DealDamage
     };
 
@@ -54,12 +60,28 @@ namespace ai
         bool inCombat = false;
         bool inDungeon = false;
         bool hasAttackers = false;
+        bool hasPossibleTargets = false;
+        bool hasTarget = false;
+        bool targetIsElite = false;
+        bool partyInCombat = false;
+        bool leaderSafe = false;
+        bool leaderInCombat = false;
+        bool healerish = false;
+        bool tankish = false;
+        bool ranged = false;
         uint8 botHealth = 100;
         uint8 botMana = 100;
         int32 botHealthDelta = 0;
+        int32 botManaDelta = 0;
         uint8 lowestPartyHealth = 100;
+        int32 lowestPartyHealthDelta = 0;
         uint8 damagedPartyMembers = 0;
+        uint8 nearbyPartyMembers = 0;
+        uint8 attackersCount = 0;
+        uint8 possibleTargetsCount = 0;
+        uint8 balance = 100;
         float leaderDistance = 0.0f;
+        float targetDistance = 0.0f;
         ObjectGuid leaderGuid;
     };
 
@@ -85,14 +107,25 @@ namespace ai
         FriendIntent SelectIntent(const FriendSituation& situation) const;
         bool ExecuteIntent(FriendIntent intent, const FriendSituation& situation);
         bool TryActions(const std::vector<std::string>& names, const std::string& source);
-        FriendExecutionResult TryAction(const std::string& name, const std::string& source);
+        FriendExecutionResult TryAction(const std::string& name, const std::string& source, uint8 depth = 0);
+        bool TryPrerequisites(Action* action, const std::string& source, uint8 depth);
         void SetResult(FriendIntent intent, const std::string& action, FriendExecutionResult result);
-        void MaybeSayIntent(FriendIntent intent, const std::string& action);
+        void MaybeSayStatus(const FriendSituation& situation);
+        void ResetTemporaryAssignmentIfSatisfied(const FriendSituation& situation);
+
+        std::vector<std::string> PositionActions(const FriendSituation& situation) const;
+        std::vector<std::string> SelfPreservationActions(const FriendSituation& situation) const;
+        std::vector<std::string> HealActions(const FriendSituation& situation) const;
+        std::vector<std::string> BuffOrCureActions(const FriendSituation& situation) const;
+        std::vector<std::string> CrowdControlActions(const FriendSituation& situation) const;
+        std::vector<std::string> PullActions(const FriendSituation& situation) const;
+        std::vector<std::string> DamageActions(const FriendSituation& situation) const;
 
         static std::string AssignmentName(FriendAssignment value);
         static std::string VerbosityName(FriendVerbosity value);
         static std::string IntentName(FriendIntent value);
         static std::string ResultName(FriendExecutionResult value);
+        static std::string BalanceName(uint8 balance);
 
     private:
         PlayerbotAI* ai;
@@ -100,8 +133,12 @@ namespace ai
         FriendVerbosity verbosity = FriendVerbosity::Silent;
         FriendIntent lastIntent = FriendIntent::FollowOrIdle;
         FriendExecutionResult lastResult = FriendExecutionResult::None;
+        FriendSituation lastSituation;
         std::string lastAction;
         uint8 lastHealth = 100;
+        uint8 lastMana = 100;
+        uint8 lastLowestPartyHealth = 100;
         time_t lastBarkTime = 0;
+        time_t manualAttackUntil = 0;
     };
 }
