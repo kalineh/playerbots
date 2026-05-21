@@ -5,6 +5,7 @@
 #include <sstream>
 #include <vector>
 #include <algorithm>
+#include <cctype>
 
 #include "playerbot/AiFactory.h"
 #include "playerbot/FriendBotController.h"
@@ -67,6 +68,34 @@ std::string &trim(std::string &s);
 
 std::set<std::string> PlayerbotAI::unsecuredCommands;
 
+namespace
+{
+    std::string NormalizeFriendChatCommand(std::string text)
+    {
+        while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front())))
+            text.erase(text.begin());
+
+        while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back())))
+            text.pop_back();
+
+        std::transform(text.begin(), text.end(), text.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return text;
+    }
+
+    bool IsFriendModeCommand(const std::string& command)
+    {
+        return command == "stop" || command == "hold" || command == "dont move" || command == "don't move" ||
+            command == "come" || command == "come here" || command == "return" ||
+            command == "normal" || command == "reset" || command == "act normal" ||
+            command == "stay close" || command == "close" ||
+            command == "recover" || command == "drink" ||
+            command == "attack" || command == "report" ||
+            command == "verbose" || command == "intent" ||
+            command == "debug" || command == "silent";
+    }
+}
+
 uint32 PlayerbotChatHandler::extractQuestId(std::string str)
 {
     char* source = (char*)str.c_str();
@@ -96,6 +125,16 @@ void PacketHandlingHelper::Handle(ExternalEventHelper &helper)
     }
 
     queue = delayed;
+
+    m_botPacketMutex.unlock();
+}
+
+void PacketHandlingHelper::Clear()
+{
+    m_botPacketMutex.lock();
+
+    while (!queue.empty())
+        queue.pop();
 
     m_botPacketMutex.unlock();
 }
@@ -574,6 +613,16 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 
 bool PlayerbotAI::UpdateAIReaction(uint32 elapsed, bool minimal, bool isStunned)
 {
+    if (friendModeEnabled)
+    {
+        HandleCommands();
+        if (friendModeEnabled)
+        {
+            reactionEngine->Reset();
+            return false;
+        }
+    }
+
     bool reactionFound;
     std::string mapString = WorldPosition(bot).isInstance() ? "I" : std::to_string(bot->GetMapId());
 
@@ -1060,6 +1109,64 @@ void PlayerbotAI::HandleCommands()
 
         std::string command = holder.GetCommand();
         Player* owner = holder.GetOwner();
+        std::string normalized = NormalizeFriendChatCommand(command);
+        bool handledFriendCommand = false;
+
+        if (normalized == "strict" || normalized == "friend off" || normalized == "friend disable")
+        {
+            DisableFriendMode();
+            if (owner)
+                TellPlayerNoFacing(owner, "Strict mode restored.");
+            handledFriendCommand = true;
+        }
+        else if (normalized == "friend" || normalized.find("friend ") == 0)
+        {
+            EnableFriendMode();
+
+            std::string friendCommand;
+            if (normalized.length() > 6)
+                friendCommand = NormalizeFriendChatCommand(normalized.substr(6));
+
+            std::string response;
+            if (friendCommand.empty())
+            {
+                response = "Friend mode activated.";
+            }
+            else if (friendCommand == "?")
+            {
+                ReportFriendModeStatus(owner);
+            }
+            else if (!HandleFriendCommand(friendCommand, owner, response) && owner)
+            {
+                response = "Unknown friend command.";
+            }
+
+            if (owner && !response.empty())
+                TellPlayerNoFacing(owner, response);
+
+            handledFriendCommand = true;
+        }
+        else if (friendModeEnabled)
+        {
+            if (IsFriendModeCommand(normalized))
+            {
+                std::string response;
+                if (!HandleFriendCommand(normalized, owner, response) && owner)
+                    response = "Unknown friend command.";
+
+                if (owner && !response.empty())
+                    TellPlayerNoFacing(owner, response);
+            }
+
+            handledFriendCommand = true;
+        }
+
+        if (handledFriendCommand)
+        {
+            chatCommands.pop();
+            continue;
+        }
+
         if (!helper.ParseChatCommand(command, owner) && holder.GetType() == CHAT_MSG_WHISPER)
         {
             //ostringstream out; out << "Unknown command " << command;
@@ -1144,11 +1251,20 @@ void PlayerbotAI::UpdateAIInternal(uint32 elapsed, bool minimal)
         return;
     }
 
-    botOutgoingPacketHandlers.Handle(helper);
-    masterIncomingPacketHandlers.Handle(helper);
-    masterOutgoingPacketHandlers.Handle(helper);
+    if (friendModeEnabled)
+    {
+        botOutgoingPacketHandlers.Clear();
+        masterIncomingPacketHandlers.Clear();
+        masterOutgoingPacketHandlers.Clear();
+    }
+    else
+    {
+        botOutgoingPacketHandlers.Handle(helper);
+        masterIncomingPacketHandlers.Handle(helper);
+        masterOutgoingPacketHandlers.Handle(helper);
+    }
 
-	DoNextAction(minimal);
+    DoNextAction(minimal);
 }
 
 void PlayerbotAI::HandleTeleportAck()
@@ -2193,6 +2309,15 @@ void PlayerbotAI::EnableFriendMode()
         return;
 
     friendModeEnabled = true;
+
+    if (reactionEngine)
+        reactionEngine->Reset();
+    botOutgoingPacketHandlers.Clear();
+    masterIncomingPacketHandlers.Clear();
+    masterOutgoingPacketHandlers.Clear();
+    while (!chatReplies.empty())
+        chatReplies.pop();
+    StopMoving();
 
     if (friendController)
         friendController->OnFriendModeEnabled();

@@ -327,6 +327,7 @@ class PacketHandlingHelper
 public:
     void AddHandler(uint16 opcode, std::string handler, bool shouldDelay = false);
     void Handle(ExternalEventHelper &helper);
+    void Clear();
     void AddPacket(const WorldPacket& packet);
 
 private:

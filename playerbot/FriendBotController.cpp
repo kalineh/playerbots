@@ -356,6 +356,10 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
     if (situation.leaderSafe && situation.leaderDistance > softLeash)
         return FriendIntent::ReturnToParty;
 
+    if (!situation.inCombat && !situation.partyInCombat && situation.leaderSafe &&
+        situation.leaderDistance > PreferredLeaderDistance(situation))
+        return FriendIntent::ReturnToParty;
+
     return FriendIntent::FollowOrIdle;
 }
 
@@ -416,7 +420,7 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
                 return true;
             if (TryActions(PullActions(situation), "friend pull"))
                 return true;
-            if (situation.leaderSafe && situation.leaderDistance > SoftLeashDistance(situation))
+            if (situation.leaderSafe && situation.leaderDistance > PreferredLeaderDistance(situation))
                 return MoveNearLeader(situation, "move near leader", false);
             return false;
 
@@ -522,13 +526,22 @@ bool FriendBotController::TryPrerequisites(Action* action, const std::string& so
     return executed;
 }
 
+float FriendBotController::PreferredLeaderDistance(const FriendSituation& situation) const
+{
+    float followRange = ai ? ai->GetRange("follow") : 10.0f;
+    if (situation.inDungeon)
+        return std::max(followRange, 8.0f);
+
+    return std::max(followRange * 1.25f, 12.0f);
+}
+
 float FriendBotController::SoftLeashDistance(const FriendSituation& situation) const
 {
     float followRange = ai ? ai->GetRange("follow") : 10.0f;
     if (situation.inDungeon)
-        return std::max(followRange * 1.5f, 18.0f);
+        return std::max(followRange * 1.5f, 16.0f);
 
-    return std::max(followRange * 2.0f, 30.0f);
+    return std::max(followRange * 2.0f, 24.0f);
 }
 
 float FriendBotController::HardLeashDistance(const FriendSituation& situation) const
@@ -554,7 +567,7 @@ bool FriendBotController::MoveNearLeader(const FriendSituation& situation, const
         !ai->IsSafe(leader) || !ai->CanMove())
         return false;
 
-    const float stopDistance = urgent ? std::max(ai->GetRange("follow") * 0.75f, 6.0f) : SoftLeashDistance(situation);
+    const float stopDistance = urgent ? std::max(ai->GetRange("follow") * 0.75f, 6.0f) : PreferredLeaderDistance(situation);
     if (situation.leaderDistance <= stopDistance)
     {
         ClearFriendMovement(true);
@@ -643,7 +656,12 @@ std::vector<std::string> FriendBotController::PositionActions(const FriendSituat
     std::vector<std::string> actions;
 
     if (situation.ranged || situation.healerish)
-        AddActions(actions, { "move out of enemy contact", "flee with pet", "flee" });
+    {
+        actions.push_back("move out of enemy contact");
+        if (ai && ai->GetBot() && ai->GetBot()->GetPet())
+            actions.push_back("flee with pet");
+        actions.push_back("flee");
+    }
 
     if (!situation.ranged)
         actions.push_back("set behind");
@@ -807,6 +825,9 @@ std::vector<std::string> FriendBotController::DamageActions(const FriendSituatio
     if (situation.tankish)
         AddActions(actions, { "tank assist", "taunt", "hand of reckoning", "righteous defense", "growl", "dark command" });
 
+    AiObjectContext* context = ai ? ai->GetAiObjectContext() : nullptr;
+    if (GetContextValue<Unit*>(context, "rti target", nullptr))
+        actions.push_back("attack rti target");
     AddActions(actions, { "dps assist", "attack least hp target" });
 
     switch (ai->GetBot()->getClass())
