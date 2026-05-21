@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "playerbot/AiFactory.h"
+#include "playerbot/FriendBotController.h"
 
 #include "MotionGenerators/MovementGenerator.h"
 #include "Grids/GridNotifiers.h"
@@ -116,6 +117,8 @@ void PacketHandlingHelper::AddPacket(const WorldPacket& packet)
 PlayerbotAI::PlayerbotAI() : PlayerbotAIBase(), bot(NULL), aiObjectContext(NULL),
     currentEngine(NULL), chatHelper(this), chatFilter(this), accountId(0), security(NULL), master(NULL), currentState(BotState::BOT_STATE_NON_COMBAT), faceTargetUpdateDelay(0), jumpTime(0), fallAfterJump(false)
 {
+    friendController = new FriendBotController(this);
+
     for (uint8 i = 0 ; i < (uint8)BotState::BOT_STATE_ALL; i++)
         engines[i] = NULL;
 
@@ -129,6 +132,8 @@ PlayerbotAI::PlayerbotAI() : PlayerbotAIBase(), bot(NULL), aiObjectContext(NULL)
 PlayerbotAI::PlayerbotAI(Player* bot) :
     PlayerbotAIBase(), chatHelper(this), chatFilter(this), security(bot), master(NULL), faceTargetUpdateDelay(0), jumpTime(0), fallAfterJump(false)
 {
+    friendController = new FriendBotController(this);
+
     this->bot = bot;
     if (!bot->isTaxiCheater() && HasCheat(BotCheatMask::taxi))
         bot->SetTaxiCheater(true);
@@ -244,6 +249,9 @@ PlayerbotAI::PlayerbotAI(Player* bot) :
 
 PlayerbotAI::~PlayerbotAI()
 {
+    if (friendController)
+        delete friendController;
+
     for (uint8 i = 0 ; i < (uint8)BotState::BOT_STATE_ALL; i++)
     {
         if (engines[i])
@@ -1944,7 +1952,10 @@ void PlayerbotAI::DoNextAction(bool min)
 
     bool minimal = !AllowActivity();
 
-    currentEngine->DoNextAction(NULL, 0, (minimal || min), bot->IsTaxiFlying());
+    if (friendModeEnabled && friendController)
+        friendController->RunTick(minimal || min);
+    else
+        currentEngine->DoNextAction(NULL, 0, (minimal || min), bot->IsTaxiFlying());
 
     if (!bot->IsInWorld()) //Teleport out of bg
         return;
@@ -2186,6 +2197,14 @@ void PlayerbotAI::SetFriendReportRecipient(Player* player)
         friendReportTarget.Clear();
 }
 
+bool PlayerbotAI::HandleFriendCommand(const std::string& command, Player* requester, std::string& response)
+{
+    if (!friendController)
+        return false;
+
+    return friendController->HandleCommand(command, requester, response);
+}
+
 namespace
 {
     constexpr size_t FRIEND_REPORT_CHUNK = 10;
@@ -2216,6 +2235,12 @@ namespace
 
 void PlayerbotAI::ReportFriendModeStatus(Player* recipient, bool includeSkipped)
 {
+    if (friendController)
+    {
+        friendController->Report(recipient);
+        return;
+    }
+
     if (!recipient)
         return;
 
@@ -2262,19 +2287,8 @@ void PlayerbotAI::EnableFriendMode()
     for (auto& entry : friendStrategies)
         entry.clear();
 
-    std::set<std::string> supported = aiObjectContext->GetSupportedStrategies();
-    for (const std::string& name : supported)
-    {
-        if (name.empty() || name == "friend")
-            continue;
-
-        Strategy* strategy = aiObjectContext->GetStrategy(name);
-        if (!IsFriendCandidateStrategy(strategy))
-            continue;
-
-        ApplyFriendStrategy(name, BotState::BOT_STATE_COMBAT);
-        ApplyFriendStrategy(name, BotState::BOT_STATE_NON_COMBAT);
-    }
+    if (friendController)
+        friendController->OnFriendModeEnabled();
 
     if (!friendReportTarget.IsEmpty())
     {
@@ -2307,6 +2321,8 @@ void PlayerbotAI::DisableFriendMode()
     }
 
     friendModeEnabled = false;
+    if (friendController)
+        friendController->OnFriendModeDisabled();
 }
 
 void PlayerbotAI::ApplyFriendStrategy(const std::string& name, BotState state)

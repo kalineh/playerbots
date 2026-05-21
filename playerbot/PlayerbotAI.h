@@ -64,6 +64,7 @@ public:
 
 namespace ai
 {
+    class FriendBotController;
     class WorldPosition;
     class GuidPosition;
     class IterateItemsVisitor;
@@ -402,6 +403,8 @@ public:
     void FriendStrategyAdded();
     void FriendStrategyRemoved();
     bool IsFriendMode() const { return friendModeEnabled; }
+    ai::FriendBotController* GetFriendBotController() { return friendController; }
+    bool HandleFriendCommand(const std::string& command, Player* requester, std::string& response);
     void SetFriendReportRecipient(Player* player);
     void ReportFriendModeStatus(Player* recipient, bool includeSkipped = true);
     bool IsTank(Player* player, bool inGroup = true);
@@ -729,6 +732,7 @@ protected:
     ObjectGuid friendReportTarget;
     uint8 friendStrategyRefCount = 0;
     std::array<std::set<std::string>, static_cast<size_t>(BotState::BOT_STATE_ALL)> friendStrategies;
+    ai::FriendBotController* friendController = nullptr;
 
 #ifdef BUILD_ELUNA
     MaNGOS::unique_weak_ptr<PlayerbotAI> m_weakRef;
