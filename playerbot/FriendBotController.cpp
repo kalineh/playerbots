@@ -1,6 +1,7 @@
 #include "playerbot/playerbot.h"
 #include "FriendBotController.h"
 
+#include "LootObjectStack.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "ServerFacade.h"
@@ -219,6 +220,8 @@ std::string FriendBotController::FormatReport() const
     out << ", balance=" << BalanceName(lastSituation.balance);
     out << ", leaderDist=" << static_cast<uint32>(lastSituation.leaderDistance);
     out << ", targets=" << static_cast<uint32>(lastSituation.possibleTargetsCount);
+    if (lastSituation.hasCreatureLoot)
+        out << ", loot";
     if (lastSituation.targetIsElite)
         out << ", elite";
     return out.str();
@@ -249,6 +252,25 @@ FriendSituation FriendBotController::BuildSituation()
         situation.attackersCount = GetContextValue<uint8>(context, "attackers count", 0);
         situation.possibleTargetsCount = GetContextValue<uint8>(context, "possible attack targets count", 0);
         situation.balance = GetContextValue<uint8>(context, "balance", 100);
+
+        LootObjectStack* availableLoot = GetContextValue<LootObjectStack*>(context, "available loot", nullptr);
+        if (availableLoot)
+        {
+            for (uint8 i = 0; i < 10; ++i)
+            {
+                LootObject loot = availableLoot->GetLoot(sPlayerbotAIConfig.lootDistance);
+                if (loot.IsEmpty())
+                    break;
+
+                if (loot.guid.IsCreature())
+                {
+                    situation.hasCreatureLoot = true;
+                    break;
+                }
+
+                availableLoot->Remove(loot.guid);
+            }
+        }
 
         Unit* target = GetContextValue<Unit*>(context, "current target", nullptr);
         if (!target)
@@ -344,6 +366,10 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
     if (!situation.inCombat && !situation.partyInCombat && situation.damagedPartyMembers == 0)
         return FriendIntent::BuffOrCureParty;
 
+    if (!situation.inCombat && !situation.partyInCombat && situation.hasCreatureLoot &&
+        situation.leaderSafe && situation.leaderDistance <= SoftLeashDistance(situation))
+        return FriendIntent::LootNearby;
+
     if (!situation.inDungeon && !situation.inCombat && !situation.partyInCombat &&
         situation.leaderSafe && situation.leaderDistance <= sPlayerbotAIConfig.reactDistance &&
         situation.nearbyPartyMembers >= 2 && situation.possibleTargetsCount > 0 && situation.possibleTargetsCount <= 2 &&
@@ -395,7 +421,18 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
 
         case FriendIntent::RecoverResources:
             if (!situation.inCombat)
-                return TryActions({ "drink", "food", "sit" }, "friend recover");
+            {
+                if (TryActions({ "drink", "food" }, "friend recover"))
+                    return true;
+
+                if (TryAction("sit", "friend recover") == FriendExecutionResult::Done)
+                {
+                    ai->SetActionDuration(std::max(sPlayerbotAIConfig.globalCoolDown, sPlayerbotAIConfig.reactDelay));
+                    return true;
+                }
+
+                return false;
+            }
             if (TryActions({ "mana gem", "mana potion", "dark rune", "life tap", "dark pact" }, "friend combat recover"))
                 return true;
             return TryActions(DamageActions(situation), "friend damage");
@@ -418,6 +455,8 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
         case FriendIntent::BuffOrCureParty:
             if (TryActions(BuffOrCureActions(situation), "friend support"))
                 return true;
+            if (situation.hasCreatureLoot && ExecuteLoot(situation))
+                return true;
             if (TryActions(PullActions(situation), "friend pull"))
                 return true;
             if (situation.leaderSafe && situation.leaderDistance > PreferredLeaderDistance(situation))
@@ -431,6 +470,9 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
 
         case FriendIntent::PullWithParty:
             return TryActions(PullActions(situation), "friend pull");
+
+        case FriendIntent::LootNearby:
+            return ExecuteLoot(situation);
 
         case FriendIntent::DealDamage:
             if (TryActions(DamageActions(situation), "friend damage"))
@@ -524,6 +566,71 @@ bool FriendBotController::TryPrerequisites(Action* action, const std::string& so
 
     NextAction::destroy(prerequisites);
     return executed;
+}
+
+bool FriendBotController::ExecuteLoot(const FriendSituation& situation)
+{
+    (void)situation;
+    if (!ai || !ai->GetBot() || !ai->GetAiObjectContext())
+        return false;
+
+    AiObjectContext* context = ai->GetAiObjectContext();
+    LootObjectStack* availableLoot = GetContextValue<LootObjectStack*>(context, "available loot", nullptr);
+    LootObject lootTarget = GetContextValue<LootObject>(context, "loot target", LootObject());
+
+    if (!lootTarget.IsEmpty() && !lootTarget.guid.IsCreature())
+    {
+        if (availableLoot)
+            availableLoot->Remove(lootTarget.guid);
+        context->GetValue<LootObject>("loot target")->Set(LootObject());
+        lootTarget = LootObject();
+    }
+
+    if (lootTarget.IsEmpty())
+    {
+        if (!availableLoot)
+            return false;
+
+        for (uint8 i = 0; i < 10; ++i)
+        {
+            LootObject loot = availableLoot->GetLoot(sPlayerbotAIConfig.lootDistance);
+            if (loot.IsEmpty())
+                return false;
+
+            if (loot.guid.IsCreature())
+                return TryAction("loot", "friend loot") == FriendExecutionResult::Done;
+
+            availableLoot->Remove(loot.guid);
+        }
+
+        return false;
+    }
+
+    if (TryAction("move to loot", "friend loot") == FriendExecutionResult::Done)
+        return true;
+
+    if (TryAction("open loot", "friend loot") == FriendExecutionResult::Done)
+        return true;
+
+    return TryAction("release loot", "friend loot") == FriendExecutionResult::Done;
+}
+
+bool FriendBotController::ShouldConserveMana(const FriendSituation& situation) const
+{
+    if (!ai || !ai->GetBot() || !ai->GetBot()->HasMana())
+        return false;
+
+    if (situation.botMana >= 70)
+        return false;
+
+    if (situation.targetIsElite || situation.inDungeon || situation.possibleTargetsCount > 1)
+        return false;
+
+    if (situation.lowestPartyHealth < sPlayerbotAIConfig.almostFullHealth ||
+        situation.damagedPartyMembers > 0 || situation.balance < 80)
+        return false;
+
+    return true;
 }
 
 float FriendBotController::PreferredLeaderDistance(const FriendSituation& situation) const
@@ -627,6 +734,8 @@ void FriendBotController::MaybeSayStatus(const FriendSituation& situation)
         out << ", target " << static_cast<uint32>(situation.targetDistance);
         out << ", " << BalanceName(situation.balance);
         out << ", targets " << static_cast<uint32>(situation.possibleTargetsCount) << "]";
+        if (situation.hasCreatureLoot)
+            out << " [loot]";
     }
 
     std::string statusLine = out.str();
@@ -661,12 +770,12 @@ std::vector<std::string> FriendBotController::PositionActions(const FriendSituat
 {
     std::vector<std::string> actions;
 
+    if (situation.healerish && situation.hasAttackers)
+        actions.push_back("fade");
+
     if (situation.ranged || situation.healerish)
     {
         actions.push_back("move out of enemy contact");
-        if (ai && ai->GetBot() && ai->GetBot()->GetPet())
-            actions.push_back("flee with pet");
-        actions.push_back("flee");
     }
 
     if (!situation.ranged)
@@ -836,6 +945,10 @@ std::vector<std::string> FriendBotController::DamageActions(const FriendSituatio
         actions.push_back("attack rti target");
     AddActions(actions, { "dps assist", "attack least hp target" });
 
+    const bool conserveMana = ShouldConserveMana(situation);
+    if (conserveMana)
+        actions.push_back("shoot");
+
     switch (ai->GetBot()->getClass())
     {
         case CLASS_WARRIOR:
@@ -867,11 +980,18 @@ std::vector<std::string> FriendBotController::DamageActions(const FriendSituatio
             });
             break;
         case CLASS_PRIEST:
-            AddActions(actions, {
-                "silence", "shadow word: pain", "vampiric touch", "devouring plague",
-                "mind blast", "mind flay", "holy fire", "smite", "shadow word: death",
-                "shadowfiend", "vampiric embrace"
-            });
+            if (conserveMana)
+            {
+                AddActions(actions, { "shadow word: pain", "shoot", "smite" });
+            }
+            else
+            {
+                AddActions(actions, {
+                    "silence", "shadow word: pain", "vampiric touch", "devouring plague",
+                    "mind blast", "mind flay", "holy fire", "smite", "shadow word: death",
+                    "shadowfiend", "vampiric embrace"
+                });
+            }
             break;
         case CLASS_SHAMAN:
             AddActions(actions, {
@@ -965,6 +1085,7 @@ std::string FriendBotController::IntentName(FriendIntent value)
         case FriendIntent::BuffOrCureParty: return "support";
         case FriendIntent::CrowdControl: return "cc";
         case FriendIntent::PullWithParty: return "pull";
+        case FriendIntent::LootNearby: return "loot";
         case FriendIntent::DealDamage: return "damage";
     }
 

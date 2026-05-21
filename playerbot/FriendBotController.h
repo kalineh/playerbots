@@ -41,6 +41,7 @@ namespace ai
         BuffOrCureParty,
         CrowdControl,
         PullWithParty,
+        LootNearby,
         DealDamage
     };
 
@@ -63,6 +64,7 @@ namespace ai
         bool hasPossibleTargets = false;
         bool hasTarget = false;
         bool targetIsElite = false;
+        bool hasCreatureLoot = false;
         bool partyInCombat = false;
         bool leaderSafe = false;
         bool leaderInCombat = false;
@@ -109,6 +111,8 @@ namespace ai
         bool TryActions(const std::vector<std::string>& names, const std::string& source);
         FriendExecutionResult TryAction(const std::string& name, const std::string& source, uint8 depth = 0);
         bool TryPrerequisites(Action* action, const std::string& source, uint8 depth);
+        bool ExecuteLoot(const FriendSituation& situation);
+        bool ShouldConserveMana(const FriendSituation& situation) const;
         float PreferredLeaderDistance(const FriendSituation& situation) const;
         float SoftLeashDistance(const FriendSituation& situation) const;
         float HardLeashDistance(const FriendSituation& situation) const;
