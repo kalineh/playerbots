@@ -45,6 +45,12 @@ namespace ai
         ExploreNearby
     };
 
+    enum class FriendProposal : uint8
+    {
+        None,
+        Resupply
+    };
+
     enum class FriendVerbosity : uint8
     {
         Silent,
@@ -109,6 +115,9 @@ namespace ai
         bool lowFood = false;
         bool lowWater = false;
         bool lowAmmo = false;
+        bool shouldTrain = false;
+        bool shouldUpgradeGear = false;
+        bool shouldUpgradeBags = false;
         bool travelTargetActive = false;
         bool travelTargetPreparing = false;
         bool travelTargetTraveling = false;
@@ -122,10 +131,15 @@ namespace ai
         bool healerPartyHasThreat = false;
         uint8 botHealth = 100;
         uint8 botMana = 100;
+        uint8 botLevel = 1;
+        uint8 leaderLevel = 0;
         uint8 bagSpace = 0;
         uint8 durability = 100;
         int32 botHealthDelta = 0;
         int32 botManaDelta = 0;
+        uint32 money = 0;
+        uint32 trainCost = 0;
+        uint32 gearBudget = 0;
         uint8 lowestPartyHealth = 100;
         int32 lowestPartyHealthDelta = 0;
         uint8 damagedPartyMembers = 0;
@@ -214,6 +228,20 @@ namespace ai
         bool MoveToFriendTravelTarget(const FriendSituation& situation);
         bool IsSafeForTownChores(const FriendSituation& situation) const;
         bool NeedsTownChores(const FriendSituation& situation) const;
+        bool WantsTownProgression(const FriendSituation& situation) const;
+        bool TrySoftTownProgression(const FriendSituation& situation);
+        bool TrySoftLevelCatchup(const FriendSituation& situation);
+        bool TrySoftTraining(const FriendSituation& situation);
+        bool TrySoftBagUpgrade(const FriendSituation& situation);
+        bool TrySoftGearUpgrade(const FriendSituation& situation);
+        bool ForceLevel(uint32 level, Player* requester, std::string& response);
+        bool ForceLevelSync(Player* requester, std::string& response);
+        bool ForceGearSync(Player* requester, std::string& response);
+        bool ForceGearEmpty(Player* requester, std::string& response);
+        bool ApplyFriendLevel(uint32 level);
+        uint8 EquippedBagSlots() const;
+        void MaybeProposeTownChores(const FriendSituation& situation);
+        void ClearProposal();
         bool ExecuteIdleGoal(const FriendSituation& situation);
         bool IsSafeForIdleActivity(const FriendSituation& situation) const;
         FriendIdleGoal SelectIdleGoal(const FriendSituation& situation);
@@ -251,6 +279,7 @@ namespace ai
         static std::string CommandName(FriendCommand value);
         static std::string ModeName(FriendMode value);
         static std::string IdleGoalName(FriendIdleGoal value);
+        static std::string ProposalName(FriendProposal value);
         static std::string VerbosityName(FriendVerbosity value);
         static std::string IntentName(FriendIntent value);
         static std::string ResultName(FriendExecutionResult value);
@@ -264,6 +293,7 @@ namespace ai
         FriendVerbosity verbosity = FriendVerbosity::Silent;
         FriendIntent lastIntent = FriendIntent::FollowOrIdle;
         FriendExecutionResult lastResult = FriendExecutionResult::None;
+        FriendProposal pendingProposal = FriendProposal::None;
         FriendSituation lastSituation;
         std::string lastAction;
         uint8 lastHealth = 100;
@@ -281,6 +311,12 @@ namespace ai
         bool resupplyTravelRequested = false;
         bool idleTravelRequested = false;
         uint32 idleTravelPurpose = 0;
+        time_t proposalExpiresAt = 0;
+        time_t nextProposalAt = 0;
+        time_t nextSoftLevelCatchupAt = 0;
+        time_t nextSoftTrainingAt = 0;
+        time_t nextSoftBagUpgradeAt = 0;
+        time_t nextSoftGearUpgradeAt = 0;
         std::string lastActivityBark;
         time_t nextActivityBarkAt = 0;
         FriendAbilityCatalog abilityCatalog;

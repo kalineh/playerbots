@@ -86,6 +86,7 @@ namespace
     bool IsFriendModeCommand(const std::string& command)
     {
         return command == "stop" || command == "hold" || command == "dont move" || command == "don't move" ||
+            command == "ok" || command == "yes" || command == "no" ||
             command == "come" || command == "come here" || command == "return" ||
             command == "party" || command == "dungeon" || command == "solo" ||
             command == "normal" || command == "reset" || command == "act normal" ||
@@ -97,6 +98,10 @@ namespace
             command == "help" || command == "?" ||
             command == "items" || command.find("items ") == 0 ||
             command == "equip" || command.find("equip ") == 0 ||
+            command == "forcelevelsync" || command == "force level sync" || command == "level sync" ||
+            command == "forcegearsync" || command == "force gear sync" || command == "gear sync" ||
+            command == "forcegearempty" || command == "force gear empty" || command == "gear empty" ||
+            command.find("forcelevel ") == 0 || command.find("force level ") == 0 ||
             command == "verbose" || command == "intent" ||
             command == "debug" || command == "silent";
     }

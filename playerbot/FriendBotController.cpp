@@ -4,6 +4,7 @@
 #include "LootObjectStack.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
+#include "PlayerbotFactory.h"
 #include "ServerFacade.h"
 #include "TravelMgr.h"
 #include "strategy/Action.h"
@@ -16,6 +17,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <initializer_list>
 #include <sstream>
 
@@ -42,6 +44,12 @@ namespace
     const float FRIEND_RANGED_SPACING_DUNGEON = 10.0f;
     const float FRIEND_RANGED_SPACING_HOSTILE_BUFFER = 14.0f;
     const float FRIEND_RANGED_SPACING_PARTY_BUFFER = 3.0f;
+    const uint32 FRIEND_SOFT_LEVEL_CATCHUP_COOLDOWN = 5 * MINUTE;
+    const uint32 FRIEND_SOFT_TRAINING_COOLDOWN = 3 * MINUTE;
+    const uint32 FRIEND_SOFT_BAG_UPGRADE_COOLDOWN = 5 * MINUTE;
+    const uint32 FRIEND_SOFT_GEAR_UPGRADE_COOLDOWN = 10 * MINUTE;
+    const uint32 FRIEND_PROPOSAL_COOLDOWN = 5 * MINUTE;
+    const uint32 FRIEND_PROPOSAL_REJECT_COOLDOWN = 10 * MINUTE;
 
     void AddActions(std::vector<std::string>& actions, std::initializer_list<const char*> names)
     {
@@ -147,6 +155,7 @@ void FriendBotController::Reset()
     lastLowestPartyHealth = 100;
     lastStatusLine.clear();
     lastTargetReason.clear();
+    pendingProposal = FriendProposal::None;
     manualAttackUntil = 0;
     manualHealUntil = 0;
     manualBuffUntil = 0;
@@ -157,6 +166,12 @@ void FriendBotController::Reset()
     resupplyTravelRequested = false;
     idleTravelRequested = false;
     idleTravelPurpose = 0;
+    proposalExpiresAt = 0;
+    nextProposalAt = 0;
+    nextSoftLevelCatchupAt = 0;
+    nextSoftTrainingAt = 0;
+    nextSoftBagUpgradeAt = 0;
+    nextSoftGearUpgradeAt = 0;
     lastActivityBark.clear();
     nextActivityBarkAt = 0;
     abilityCatalog.Reset();
@@ -200,6 +215,7 @@ void FriendBotController::RunTick(bool minimal)
     }
 
     MaybeSayStatus(situation);
+    MaybeProposeTownChores(situation);
 }
 
 bool FriendBotController::HandleCommand(const std::string& rawCommand, Player* requester, std::string& response)
@@ -220,7 +236,53 @@ bool FriendBotController::HandleCommand(const std::string& rawCommand, Player* r
         resupplyTravelRequested = false;
         idleTravelRequested = false;
         idleTravelPurpose = 0;
+        ClearProposal();
     };
+
+    if (cmd == "ok" || cmd == "yes")
+    {
+        if (pendingProposal == FriendProposal::Resupply && proposalExpiresAt >= time(nullptr))
+        {
+            command = FriendCommand::Shop;
+            idleGoal = FriendIdleGoal::Resupply;
+            idleGoalUntil = time(nullptr) + 180;
+            idleNextActionAt = 0;
+            resupplyTravelRequested = false;
+            idleTravelRequested = false;
+            idleTravelPurpose = 0;
+            ClearProposal();
+            response = "Okay, I'll handle supplies.";
+            return true;
+        }
+
+        ClearProposal();
+        response = "Nothing pending.";
+        return true;
+    }
+
+    if (cmd == "no")
+    {
+        ClearProposal();
+        nextProposalAt = time(nullptr) + FRIEND_PROPOSAL_REJECT_COOLDOWN;
+        response = "Okay, I'll wait.";
+        return true;
+    }
+
+    if (cmd == "forcelevelsync" || cmd == "force level sync" || cmd == "level sync")
+        return ForceLevelSync(requester, response);
+
+    if (cmd == "forcegearsync" || cmd == "force gear sync" || cmd == "gear sync")
+        return ForceGearSync(requester, response);
+
+    if (cmd == "forcegearempty" || cmd == "force gear empty" || cmd == "gear empty")
+        return ForceGearEmpty(requester, response);
+
+    if (StartsWith(cmd, "forcelevel ") || StartsWith(cmd, "force level "))
+    {
+        std::string levelText = StartsWith(cmd, "forcelevel ") ? Trim(cmd.substr(11)) : Trim(cmd.substr(12));
+        uint32 level = static_cast<uint32>(std::atoi(levelText.c_str()));
+        return ForceLevel(level, requester, response);
+    }
 
     if (cmd == "party" || cmd == "normal" || cmd == "reset" || cmd == "act normal")
     {
@@ -310,6 +372,7 @@ bool FriendBotController::HandleCommand(const std::string& rawCommand, Player* r
         resupplyTravelRequested = false;
         idleTravelRequested = false;
         idleTravelPurpose = 0;
+        ClearProposal();
         MaybeSayActivity(lastSituation, "resupply-command", {
             "I'm going to sell junk and restock.",
             "I'll take care of supplies."
@@ -438,6 +501,7 @@ std::string FriendBotController::FormatReport() const
     out << "friend: mode=" << ModeName(mode);
     out << ", command=" << CommandName(command);
     out << ", idle=" << IdleGoalName(idleGoal);
+    out << ", proposal=" << ProposalName(pendingProposal);
     out << ", verbosity=" << VerbosityName(verbosity);
     out << ", intent=" << IntentName(lastIntent);
     out << ", action=" << (lastAction.empty() ? "none" : lastAction);
@@ -446,6 +510,9 @@ std::string FriendBotController::FormatReport() const
     out << ", target=" << (lastTargetReason.empty() ? "none" : lastTargetReason);
     out << ", hp=" << static_cast<uint32>(lastSituation.botHealth) << "%";
     out << ", mana=" << static_cast<uint32>(lastSituation.botMana) << "%";
+    out << ", level=" << static_cast<uint32>(lastSituation.botLevel);
+    if (lastSituation.leaderLevel)
+        out << "/" << static_cast<uint32>(lastSituation.leaderLevel);
     out << ", bag=" << static_cast<uint32>(lastSituation.bagSpace) << "%";
     out << ", dur=" << static_cast<uint32>(lastSituation.durability) << "%";
     out << ", partyHp=" << static_cast<uint32>(lastSituation.lowestPartyHealth) << "%";
@@ -485,6 +552,8 @@ FriendSituation FriendBotController::BuildSituation()
     situation.ranged = ai->ContainsStrategy(STRATEGY_TYPE_RANGED) || ai->IsRanged(bot, false);
     situation.botHealth = bot->GetHealthPercent();
     situation.botMana = bot->GetMaxPower(POWER_MANA) > 0 ? ai->GetManaPercent() : 100;
+    situation.botLevel = bot->GetLevel();
+    situation.money = bot->GetMoney();
     situation.inTown = WorldPosition(bot).HasAreaFlag(AREA_FLAG_CAPITAL);
     situation.botHealthDelta = static_cast<int32>(situation.botHealth) - static_cast<int32>(lastHealth);
     situation.botManaDelta = static_cast<int32>(situation.botMana) - static_cast<int32>(lastMana);
@@ -517,12 +586,19 @@ FriendSituation FriendBotController::BuildSituation()
         uint32 trashItems = context->GetValue<uint32>("item count", "gray")->Get();
         uint32 minRepairCost = context->GetValue<uint32>("min repair cost")->Get();
         uint32 repairMoney = context->GetValue<uint32>("free money for", static_cast<uint32>(NeedMoneyFor::repair))->Get();
+        situation.trainCost = context->GetValue<uint32>("train cost", TRAINER_TYPE_CLASS)->Get();
+        situation.gearBudget = context->GetValue<uint32>("free money for", static_cast<uint32>(NeedMoneyFor::gear))->Get();
         situation.shouldSell = situation.bagSpace > 80 || vendorItems > 0 || trashItems > 0;
         situation.shouldRepair = situation.durability < 95 && minRepairCost > 0 && minRepairCost <= repairMoney;
         situation.lowFood = context->GetValue<uint32>("item count", "food")->Get() < 5;
         situation.lowWater = bot->GetMaxPower(POWER_MANA) > 0 && context->GetValue<uint32>("item count", "water")->Get() < 5;
         situation.lowAmmo = bot->getClass() == CLASS_HUNTER && context->GetValue<uint32>("item count", "ammo")->Get() < 200;
         situation.shouldBuy = situation.bagSpace < 90 && (situation.lowFood || situation.lowWater || situation.lowAmmo);
+        situation.shouldTrain = situation.trainCost > 0 && situation.trainCost <=
+            context->GetValue<uint32>("free money for", static_cast<uint32>(NeedMoneyFor::spells))->Get();
+        situation.shouldUpgradeBags = situation.bagSpace > 70 && EquippedBagSlots() < 4 && situation.gearBudget >= 500;
+        uint32 gearCost = std::max<uint32>(1000, (bot->GetLevel() * bot->GetLevel() * bot->GetLevel()) / 2);
+        situation.shouldUpgradeGear = situation.gearBudget >= gearCost;
 
         float closestAttackerTargetingMeDistance = 0.0f;
         std::list<ObjectGuid> attackersTargetingMe = context->GetValue<std::list<ObjectGuid> >("attackers targeting me")->Get();
@@ -678,6 +754,7 @@ FriendSituation FriendBotController::BuildSituation()
         situation.leaderSafe = true;
         situation.leaderGuid = leader->GetObjectGuid();
         situation.leaderDistance = sServerFacade.GetDistance2d(bot, leader);
+        situation.leaderLevel = leader->GetLevel();
         situation.leaderInCombat = sServerFacade.IsInCombat(leader);
         situation.partyInCombat = situation.partyInCombat || situation.leaderInCombat;
 
@@ -2355,6 +2432,9 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
         }
     }
 
+    if (TrySoftTownProgression(situation))
+        return true;
+
     if (NeedsTownChores(situation) && TryTravelForResupply(situation))
         return true;
 
@@ -2536,9 +2616,424 @@ bool FriendBotController::NeedsTownChores(const FriendSituation& situation) cons
     if (situation.shouldRepair || situation.shouldSell || situation.shouldBuy)
         return true;
 
+    if (WantsTownProgression(situation))
+        return true;
+
     return command == FriendCommand::Shop && resupplyTravelRequested &&
         (situation.travelTargetPreparing || situation.travelTargetTraveling ||
          (situation.travelTargetActive && !situation.nearbyVendor && !situation.nearbyRepair));
+}
+
+bool FriendBotController::WantsTownProgression(const FriendSituation& situation) const
+{
+    if (mode == FriendMode::Dungeon || situation.inDungeon)
+        return false;
+
+    if (command != FriendCommand::Shop && mode != FriendMode::Solo)
+        return false;
+
+    const time_t now = time(nullptr);
+    if (situation.leaderLevel && situation.botLevel < situation.leaderLevel && now >= nextSoftLevelCatchupAt)
+        return true;
+
+    if (situation.shouldTrain && now >= nextSoftTrainingAt)
+        return true;
+
+    if (situation.shouldUpgradeBags && now >= nextSoftBagUpgradeAt)
+        return true;
+
+    return situation.shouldUpgradeGear && now >= nextSoftGearUpgradeAt;
+}
+
+bool FriendBotController::TrySoftTownProgression(const FriendSituation& situation)
+{
+    if (!IsSafeForTownChores(situation))
+        return false;
+
+    if (TrySoftLevelCatchup(situation))
+        return true;
+
+    if (TrySoftTraining(situation))
+        return true;
+
+    if (TrySoftBagUpgrade(situation))
+        return true;
+
+    return TrySoftGearUpgrade(situation);
+}
+
+bool FriendBotController::TrySoftLevelCatchup(const FriendSituation& situation)
+{
+    if (!ai || !ai->GetBot() || (!situation.inTown && !situation.nearbyVendor))
+        return false;
+
+    const time_t now = time(nullptr);
+    if (now < nextSoftLevelCatchupAt)
+        return false;
+
+    Player* bot = ai->GetBot();
+    Player* leader = ai->GetGroupMaster();
+    if (!leader || !ai->IsSafe(leader))
+        return false;
+
+    const uint32 maxLevel = sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL);
+    if (bot->GetLevel() < leader->GetLevel())
+    {
+        uint32 targetLevel = std::min<uint32>(bot->GetLevel() + 1, std::min<uint32>(leader->GetLevel(), maxLevel));
+        if (!ApplyFriendLevel(targetLevel))
+            return false;
+
+        nextSoftLevelCatchupAt = now + FRIEND_SOFT_LEVEL_CATCHUP_COOLDOWN;
+        MaybeSayActivity(situation, "level-catchup", {
+            "I caught up a bit while we were in town.",
+            "I spent a little time catching up."
+        }, 70, 120);
+        SetResult(lastIntent, "town xp catchup", FriendExecutionResult::Done);
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        return true;
+    }
+
+    if (bot->GetLevel() != leader->GetLevel() || bot->GetLevel() >= maxLevel)
+        return false;
+
+    uint32 nextLevelXp = bot->GetUInt32Value(PLAYER_NEXT_LEVEL_XP);
+    if (!nextLevelXp)
+        nextLevelXp = sObjectMgr.GetXPForLevel(bot->GetLevel());
+    if (!nextLevelXp)
+        return false;
+
+    uint32 botXp = bot->GetUInt32Value(PLAYER_XP);
+    uint32 leaderXp = leader->GetUInt32Value(PLAYER_XP);
+    if (leaderXp <= botXp + nextLevelXp / 4)
+        return false;
+
+    uint32 grant = std::min<uint32>(leaderXp - botXp, std::max<uint32>(1, nextLevelXp / 5));
+    uint32 newXp = std::min<uint32>(botXp + grant, nextLevelXp - 1);
+    if (newXp <= botXp)
+        return false;
+
+    bot->SetUInt32Value(PLAYER_XP, newXp);
+    nextSoftLevelCatchupAt = now + FRIEND_SOFT_LEVEL_CATCHUP_COOLDOWN;
+    SetResult(lastIntent, "town xp catchup", FriendExecutionResult::Done);
+    ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+    return true;
+}
+
+bool FriendBotController::TrySoftTraining(const FriendSituation& situation)
+{
+#ifdef MANGOSBOT_ONE
+    (void)situation;
+    return false;
+#else
+    if (!ai || !ai->GetBot() || (!situation.inTown && !situation.nearbyVendor) || !situation.shouldTrain)
+        return false;
+
+    const time_t now = time(nullptr);
+    if (now < nextSoftTrainingAt)
+        return false;
+
+    Player* bot = ai->GetBot();
+    if (!situation.trainCost || bot->GetMoney() < situation.trainCost)
+        return false;
+
+    bot->ModifyMoney(-static_cast<int32>(situation.trainCost));
+    bot->learnClassLevelSpells();
+    abilityCatalog.Reset();
+    nextSoftTrainingAt = now + FRIEND_SOFT_TRAINING_COOLDOWN;
+    MaybeSayActivity(situation, "town-train", {
+        "I trained while we were here.",
+        "Picked up my class training."
+    }, 55, 120);
+    SetResult(lastIntent, "town training", FriendExecutionResult::Done);
+    ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+    return true;
+#endif
+}
+
+bool FriendBotController::TrySoftBagUpgrade(const FriendSituation& situation)
+{
+    if (!ai || !ai->GetBot() || !situation.nearbyVendor || !situation.shouldUpgradeBags)
+        return false;
+
+    const time_t now = time(nullptr);
+    if (now < nextSoftBagUpgradeAt)
+        return false;
+
+    Player* bot = ai->GetBot();
+    if (EquippedBagSlots() >= 4)
+        return false;
+
+    struct BagChoice
+    {
+        uint32 itemId;
+        uint32 cost;
+        uint8 minLevel;
+    };
+
+    static const BagChoice bags[] =
+    {
+        { 4500, 50000, 30 },
+        { 4497, 10000, 15 },
+        { 4498, 2500, 8 },
+        { 4496, 500, 1 }
+    };
+
+    uint32 selectedItem = 0;
+    uint32 selectedCost = 0;
+    uint32 freeMoney = ai->GetAiObjectContext() ?
+        ai->GetAiObjectContext()->GetValue<uint32>("free money for", static_cast<uint32>(NeedMoneyFor::gear))->Get() :
+        bot->GetMoney();
+
+    for (const BagChoice& bag : bags)
+    {
+        if (bot->GetLevel() >= bag.minLevel && freeMoney >= bag.cost && bot->GetMoney() >= bag.cost)
+        {
+            selectedItem = bag.itemId;
+            selectedCost = bag.cost;
+            break;
+        }
+    }
+
+    if (!selectedItem)
+        return false;
+
+    uint8 before = EquippedBagSlots();
+    bot->StoreNewItemInBestSlots(selectedItem, 1);
+    if (EquippedBagSlots() <= before)
+        return false;
+
+    bot->ModifyMoney(-static_cast<int32>(selectedCost));
+    nextSoftBagUpgradeAt = now + FRIEND_SOFT_BAG_UPGRADE_COOLDOWN;
+    MaybeSayActivity(situation, "town-bag", {
+        "I bought another bag.",
+        "Grabbed a bag upgrade."
+    }, 60, 120);
+    SetResult(lastIntent, "town bag upgrade", FriendExecutionResult::Done);
+    ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+    return true;
+}
+
+bool FriendBotController::TrySoftGearUpgrade(const FriendSituation& situation)
+{
+    if (!ai || !ai->GetBot() || !situation.nearbyVendor || !situation.shouldUpgradeGear)
+        return false;
+
+    const time_t now = time(nullptr);
+    if (now < nextSoftGearUpgradeAt)
+        return false;
+
+    Player* bot = ai->GetBot();
+    uint32 cost = std::max<uint32>(1000, (bot->GetLevel() * bot->GetLevel() * bot->GetLevel()) / 2);
+    uint32 freeMoney = ai->GetAiObjectContext() ?
+        ai->GetAiObjectContext()->GetValue<uint32>("free money for", static_cast<uint32>(NeedMoneyFor::gear))->Get() :
+        bot->GetMoney();
+
+    uint32 quality = ITEM_QUALITY_NORMAL;
+    if (bot->GetLevel() >= 18 && freeMoney >= cost * 8)
+    {
+        quality = ITEM_QUALITY_UNCOMMON;
+        cost *= 2;
+    }
+    if (bot->GetLevel() >= 35 && freeMoney >= cost * 8)
+    {
+        quality = ITEM_QUALITY_RARE;
+        cost *= 3;
+    }
+
+    if (freeMoney < cost || bot->GetMoney() < cost)
+        return false;
+
+    uint32 before = ai->GetEquipGearScore(bot, false, false);
+    PlayerbotFactory factory(bot, bot->GetLevel(), quality);
+    factory.EquipGearPartialUpgrade();
+    uint32 after = ai->GetEquipGearScore(bot, false, false);
+    if (after <= before)
+        return false;
+
+    bot->ModifyMoney(-static_cast<int32>(cost));
+    nextSoftGearUpgradeAt = now + FRIEND_SOFT_GEAR_UPGRADE_COOLDOWN;
+    MaybeSayActivity(situation, "town-gear", {
+        "I found a small gear upgrade.",
+        "Spent some coin on better gear."
+    }, 60, 120);
+    SetResult(lastIntent, "town gear upgrade", FriendExecutionResult::Done);
+    ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+    return true;
+}
+
+bool FriendBotController::ForceLevel(uint32 level, Player* requester, std::string& response)
+{
+    if (!ai || !ai->GetBot())
+    {
+        response = "I can't change level right now.";
+        return true;
+    }
+
+    uint32 maxLevel = sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL);
+    if (level < 1 || level > maxLevel)
+    {
+        std::ostringstream out;
+        out << "Use forcelevel 1-" << maxLevel << ".";
+        response = out.str();
+        return true;
+    }
+
+    if (!ApplyFriendLevel(level))
+    {
+        response = "I couldn't change level.";
+        return true;
+    }
+
+    if (requester)
+        Report(requester);
+
+    response = "Level set.";
+    return true;
+}
+
+bool FriendBotController::ForceLevelSync(Player* requester, std::string& response)
+{
+    Player* target = requester ? requester : (ai ? ai->GetMaster() : nullptr);
+    if (!target)
+    {
+        response = "No player to sync level with.";
+        return true;
+    }
+
+    return ForceLevel(target->GetLevel(), requester, response);
+}
+
+bool FriendBotController::ForceGearSync(Player* requester, std::string& response)
+{
+    if (!ai || !ai->GetBot())
+    {
+        response = "I can't change gear right now.";
+        return true;
+    }
+
+    Player* bot = ai->GetBot();
+    Player* master = requester ? requester : ai->GetMaster();
+    uint32 targetLevel = bot->GetLevel();
+    if (master)
+        targetLevel = std::min<uint32>(targetLevel, master->GetLevel());
+
+    PlayerbotFactory factory(bot, targetLevel, ITEM_QUALITY_NORMAL);
+    factory.UpgradeGear(master != nullptr);
+    abilityCatalog.Reset();
+    response = "Gear synced.";
+    return true;
+}
+
+bool FriendBotController::ForceGearEmpty(Player* requester, std::string& response)
+{
+    (void)requester;
+    if (!ai || !ai->GetBot())
+    {
+        response = "I can't clear gear right now.";
+        return true;
+    }
+
+    Player* bot = ai->GetBot();
+    uint32 removed = 0;
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!item)
+            continue;
+
+        bot->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
+        ++removed;
+    }
+
+    abilityCatalog.Reset();
+    std::ostringstream out;
+    out << "Removed " << removed << " equipped items.";
+    response = out.str();
+    return true;
+}
+
+bool FriendBotController::ApplyFriendLevel(uint32 level)
+{
+    if (!ai || !ai->GetBot())
+        return false;
+
+    Player* bot = ai->GetBot();
+    uint32 maxLevel = sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL);
+    level = std::max<uint32>(1, std::min<uint32>(level, maxLevel));
+    bot->SetLevel(level);
+    bot->SetUInt32Value(PLAYER_XP, 0);
+    bot->SetUInt32Value(PLAYER_NEXT_LEVEL_XP, sObjectMgr.GetXPForLevel(level));
+    if (Pet* pet = bot->GetPet())
+        pet->SetLevel(level);
+
+#ifndef MANGOSBOT_ONE
+    bot->learnClassLevelSpells();
+#endif
+
+    abilityCatalog.Reset();
+    return true;
+}
+
+uint8 FriendBotController::EquippedBagSlots() const
+{
+    if (!ai || !ai->GetBot())
+        return 0;
+
+    uint8 count = 0;
+    Player* bot = ai->GetBot();
+    for (uint8 slot = INVENTORY_SLOT_BAG_START; slot < INVENTORY_SLOT_BAG_END; ++slot)
+    {
+        if (bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            ++count;
+    }
+
+    return count;
+}
+
+void FriendBotController::MaybeProposeTownChores(const FriendSituation& situation)
+{
+    if (!ai || !ai->GetBot() || mode != FriendMode::Party || command != FriendCommand::None ||
+        situation.inDungeon || situation.inCombat || situation.hasAttackers || situation.partyInCombat)
+        return;
+
+    const time_t now = time(nullptr);
+    if (pendingProposal != FriendProposal::None && proposalExpiresAt < now)
+        ClearProposal();
+
+    if (pendingProposal != FriendProposal::None || now < nextProposalAt)
+        return;
+
+    if (!NeedsTownChores(situation) || IsSafeForTownChores(situation))
+        return;
+
+    const bool urgent = situation.bagSpace >= 95 ||
+        (situation.shouldRepair && situation.durability < 60) ||
+        situation.lowWater || situation.lowAmmo;
+    if (!urgent)
+        return;
+
+    const char* line = "I need to resupply soon. Say ok if we should head to town.";
+    if (situation.bagSpace >= 95)
+        line = "My bags are full. Say ok if we should find a vendor.";
+    else if (situation.shouldRepair && situation.durability < 60)
+        line = "My gear is getting rough. Say ok if we should repair.";
+    else if (situation.lowWater || situation.lowAmmo)
+        line = "I'm low on supplies. Say ok if we should resupply.";
+
+    if (ai->GetBot()->GetGroup())
+        ai->SayToParty(line);
+    else
+        ai->Say(line);
+
+    pendingProposal = FriendProposal::Resupply;
+    proposalExpiresAt = now + 90;
+    nextProposalAt = now + FRIEND_PROPOSAL_COOLDOWN;
+}
+
+void FriendBotController::ClearProposal()
+{
+    pendingProposal = FriendProposal::None;
+    proposalExpiresAt = 0;
 }
 
 bool FriendBotController::ExecuteIdleGoal(const FriendSituation& situation)
@@ -3122,6 +3617,9 @@ void FriendBotController::MaybeSayStatus(const FriendSituation& situation)
         out << ", hp " << static_cast<uint32>(situation.botHealth) << "%";
         out << " (" << static_cast<int32>(situation.botHealthDelta) << ")";
         out << ", mana " << static_cast<uint32>(situation.botMana) << "%";
+        out << ", lvl " << static_cast<uint32>(situation.botLevel);
+        if (situation.leaderLevel)
+            out << "/" << static_cast<uint32>(situation.leaderLevel);
         out << ", party " << static_cast<uint32>(situation.lowestPartyHealth) << "%";
         out << " (" << static_cast<int32>(situation.lowestPartyHealthDelta) << ")";
         out << ", combat " << (situation.inCombat ? "self" : "no");
@@ -3149,7 +3647,10 @@ void FriendBotController::MaybeSayStatus(const FriendSituation& situation)
         if (NeedsTownChores(situation))
             out << " [chores sell=" << (situation.shouldSell ? "y" : "n")
                 << " repair=" << (situation.shouldRepair ? "y" : "n")
-                << " buy=" << (situation.shouldBuy ? "y" : "n") << "]";
+                << " buy=" << (situation.shouldBuy ? "y" : "n")
+                << " train=" << (situation.shouldTrain ? "y" : "n")
+                << " bag=" << (situation.shouldUpgradeBags ? "y" : "n")
+                << " gear=" << (situation.shouldUpgradeGear ? "y" : "n") << "]";
         if (situation.travelTargetPreparing || situation.travelTargetTraveling || situation.travelTargetWorking)
             out << " [travel " << (situation.travelTargetWorking ? "work" : (situation.travelTargetTraveling ? "move" : "prep"))
                 << " purpose=" << situation.travelTargetPurpose << "]";
@@ -3287,6 +3788,8 @@ void FriendBotController::PrintHelp(Player* requester) const
     ai->TellPlayerNoFacing(requester, "modes: party, dungeon, solo, normal/reset, strict/friend off",
         PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
     ai->TellPlayerNoFacing(requester, "commands: stop, come, stay close, attack, heal, buff, rest, shop/town, summon",
+        PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
+    ai->TellPlayerNoFacing(requester, "progress: ok, no, forcelevel N, forcelevelsync, forcegearsync, forcegearempty",
         PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
     ai->TellPlayerNoFacing(requester, "debug: report, intent/verbose, debug, silent, items [filter], equip [slot], help",
         PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
@@ -3629,6 +4132,17 @@ std::string FriendBotController::IdleGoalName(FriendIdleGoal value)
         case FriendIdleGoal::TravelToGrind: return "travel grind";
         case FriendIdleGoal::TravelToGather: return "travel gather";
         case FriendIdleGoal::ExploreNearby: return "explore";
+    }
+
+    return "unknown";
+}
+
+std::string FriendBotController::ProposalName(FriendProposal value)
+{
+    switch (value)
+    {
+        case FriendProposal::None: return "none";
+        case FriendProposal::Resupply: return "resupply";
     }
 
     return "unknown";
