@@ -2819,7 +2819,12 @@ bool FriendBotController::TrySoftBagUpgrade(const FriendSituation& situation)
     uint8 before = EquippedBagSlots();
     bot->StoreNewItemInBestSlots(selectedItem, 1);
     if (EquippedBagSlots() <= before)
+    {
+        nextSoftBagUpgradeAt = now + FRIEND_SOFT_BAG_UPGRADE_COOLDOWN;
+        SetResult(lastIntent, "town bag upgrade failed", FriendExecutionResult::BlockedNotPossible);
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
         return false;
+    }
 
     bot->ModifyMoney(-static_cast<int32>(selectedCost));
     nextSoftBagUpgradeAt = now + FRIEND_SOFT_BAG_UPGRADE_COOLDOWN;
@@ -2864,10 +2869,15 @@ bool FriendBotController::TrySoftGearUpgrade(const FriendSituation& situation)
 
     uint32 before = ai->GetEquipGearScore(bot, false, false);
     PlayerbotFactory factory(bot, bot->GetLevel(), quality);
-    factory.EquipGearPartialUpgrade();
+    factory.UpgradeGear(false);
     uint32 after = ai->GetEquipGearScore(bot, false, false);
     if (after <= before)
+    {
+        nextSoftGearUpgradeAt = now + FRIEND_SOFT_GEAR_UPGRADE_COOLDOWN;
+        SetResult(lastIntent, "town gear upgrade failed", FriendExecutionResult::BlockedNotUseful);
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
         return false;
+    }
 
     bot->ModifyMoney(-static_cast<int32>(cost));
     nextSoftGearUpgradeAt = now + FRIEND_SOFT_GEAR_UPGRADE_COOLDOWN;
