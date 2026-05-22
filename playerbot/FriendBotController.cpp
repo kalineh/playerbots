@@ -25,7 +25,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v7";
+    const char* FRIEND_BOT_VERSION = "v8";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -2011,6 +2011,9 @@ bool FriendBotController::TryReachAbilityTarget(const FriendAbility& ability, Un
     if (!bot || !IsUsableUnit(ai, target) || !bot->GetMotionMaster())
         return false;
 
+    if (!ShouldMoveForAbilityTarget(ability, target))
+        return false;
+
     const bool hostile = IsHostileTarget(ai, target);
     const bool friendly = IsFriendlyTarget(ai, target);
     if (!hostile && !friendly)
@@ -2673,6 +2676,51 @@ bool FriendBotController::HasEquivalentAura(const FriendAbility& ability, Unit* 
         return ai->HasAnyAuraOf(target, "lightning shield", "water shield", NULL);
 
     return false;
+}
+
+bool FriendBotController::ShouldMoveForAbilityTarget(const FriendAbility& ability, Unit* target) const
+{
+    if (!ai || !ai->GetBot() || !target || target == ai->GetBot())
+        return false;
+
+    if (ability.Has(FRIEND_ABILITY_MOVEMENT))
+        return false;
+
+    const bool hostile = IsHostileTarget(ai, target);
+    const bool friendly = IsFriendlyTarget(ai, target);
+    if (!hostile && !friendly)
+        return false;
+
+    const bool pointBlank = ability.maxRange <= sPlayerbotAIConfig.contactDistance;
+    if (friendly && pointBlank)
+        return false;
+
+    const SpellEntry* spellInfo = sServerFacade.LookupSpellInfo(ability.spellId);
+    bool explicitUnitTarget = spellInfo && (spellInfo->Targets & TARGET_FLAG_UNIT);
+    bool destinationTarget = spellInfo && (spellInfo->Targets & TARGET_FLAG_DEST_LOCATION);
+    if (spellInfo)
+    {
+        for (uint8 i = 0; i < MAX_EFFECT_INDEX; ++i)
+        {
+            const uint32 targetA = spellInfo->EffectImplicitTargetA[i];
+            const uint32 targetB = spellInfo->EffectImplicitTargetB[i];
+            if (targetA == TARGET_UNIT || targetA == TARGET_UNIT_ENEMY ||
+                targetB == TARGET_UNIT || targetB == TARGET_UNIT_ENEMY)
+                explicitUnitTarget = true;
+
+            if (targetA == TARGET_ENUM_UNITS_ENEMY_AOE_AT_DEST_LOC ||
+                targetB == TARGET_ENUM_UNITS_ENEMY_AOE_AT_DEST_LOC)
+                destinationTarget = true;
+        }
+    }
+
+    if (hostile && pointBlank && ability.Has(FRIEND_ABILITY_AOE) && !explicitUnitTarget)
+        return false;
+
+    if (pointBlank && !explicitUnitTarget && !destinationTarget && !ability.Has(FRIEND_ABILITY_MELEE))
+        return false;
+
+    return true;
 }
 
 bool FriendBotController::TryCatalogDamage(const FriendSituation& situation, const std::string& source)
