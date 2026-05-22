@@ -135,7 +135,60 @@ namespace
             Contains(name, "heroism");
     }
 
-    uint32 ClassifyAbility(const SpellEntry* spellInfo, const std::string& lowerName, uint32& dispelType)
+    void AddDispelType(uint32 type, uint32& primaryType, uint32& mask)
+    {
+        if (!type || type >= 32)
+            return;
+
+        if (!primaryType)
+            primaryType = type;
+        mask |= 1u << type;
+    }
+
+    bool IsCureName(const std::string& name, uint32& dispelType, uint32& dispelMask)
+    {
+        const uint32 originalMask = dispelMask;
+
+        if (Contains(name, "dispel magic"))
+            AddDispelType(DISPEL_MAGIC, dispelType, dispelMask);
+
+        if (Contains(name, "remove curse") ||
+            Contains(name, "remove lesser curse") ||
+            Contains(name, "remove corruption"))
+            AddDispelType(DISPEL_CURSE, dispelType, dispelMask);
+
+        if (Contains(name, "cure disease") ||
+            Contains(name, "abolish disease"))
+            AddDispelType(DISPEL_DISEASE, dispelType, dispelMask);
+
+        if (Contains(name, "cure poison") ||
+            Contains(name, "abolish poison") ||
+            Contains(name, "remove corruption"))
+            AddDispelType(DISPEL_POISON, dispelType, dispelMask);
+
+        if (Contains(name, "purify"))
+        {
+            AddDispelType(DISPEL_DISEASE, dispelType, dispelMask);
+            AddDispelType(DISPEL_POISON, dispelType, dispelMask);
+        }
+
+        if (Contains(name, "cleanse spirit"))
+        {
+            AddDispelType(DISPEL_POISON, dispelType, dispelMask);
+            AddDispelType(DISPEL_DISEASE, dispelType, dispelMask);
+            AddDispelType(DISPEL_CURSE, dispelType, dispelMask);
+        }
+        else if (Contains(name, "cleanse"))
+        {
+            AddDispelType(DISPEL_POISON, dispelType, dispelMask);
+            AddDispelType(DISPEL_DISEASE, dispelType, dispelMask);
+            AddDispelType(DISPEL_MAGIC, dispelType, dispelMask);
+        }
+
+        return dispelMask != originalMask;
+    }
+
+    uint32 ClassifyAbility(const SpellEntry* spellInfo, const std::string& lowerName, uint32& dispelType, uint32& dispelMask)
     {
         uint32 flags = 0;
         const bool positive = IsPositiveSpell(spellInfo);
@@ -164,6 +217,9 @@ namespace
         if (IsDamageCooldownName(lowerName))
             flags |= FRIEND_ABILITY_DAMAGE_COOLDOWN;
 
+        if (IsCureName(lowerName, dispelType, dispelMask))
+            flags |= FRIEND_ABILITY_CURE;
+
         for (uint8 i = 0; i < MAX_EFFECT_INDEX; ++i)
         {
             const uint32 effect = spellInfo->Effect[i];
@@ -181,8 +237,7 @@ namespace
             if (effect == SPELL_EFFECT_DISPEL || effect == SPELL_EFFECT_DISPEL_MECHANIC)
             {
                 flags |= FRIEND_ABILITY_CURE;
-                if (spellInfo->EffectMiscValue[i] > 0)
-                    dispelType = spellInfo->EffectMiscValue[i];
+                AddDispelType(spellInfo->EffectMiscValue[i], dispelType, dispelMask);
             }
 
             if (effect == SPELL_EFFECT_THREAT || effect == SPELL_EFFECT_THREAT_ALL || effect == SPELL_EFFECT_ATTACK_ME)
@@ -248,6 +303,9 @@ namespace
 
         if (flags & FRIEND_ABILITY_HEAL)
             flags &= ~FRIEND_ABILITY_DAMAGE;
+
+        if (flags & FRIEND_ABILITY_CURE)
+            flags &= ~(FRIEND_ABILITY_BUFF_CORE | FRIEND_ABILITY_BUFF_SITUATIONAL);
 
         return flags;
     }
@@ -337,7 +395,7 @@ void FriendAbilityCatalog::Refresh(PlayerbotAI* ai)
         ability.powerType = spellInfo->powerType;
         ability.manaCost = spellInfo->manaCost;
         ability.manaCostPercent = spellInfo->ManaCostPercentage;
-        ability.flags = ClassifyAbility(spellInfo, ability.lowerName, ability.dispelType);
+        ability.flags = ClassifyAbility(spellInfo, ability.lowerName, ability.dispelType, ability.dispelMask);
         FillRange(spellInfo, ability);
 
         if (!ability.flags)

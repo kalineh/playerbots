@@ -2407,13 +2407,19 @@ bool FriendBotController::TryCatalogSupport(const FriendSituation& situation, co
 
     for (const FriendAbility& ability : abilityCatalog.GetAbilities())
     {
-        if (!ability.Has(FRIEND_ABILITY_CURE) || !ability.dispelType)
+        if (!ability.Has(FRIEND_ABILITY_CURE) || (!ability.dispelType && !ability.dispelMask))
             continue;
 
-        for (Unit* target : party)
+        for (uint32 dispelType = 1; dispelType < 32; ++dispelType)
         {
-            if (ai->HasAuraToDispel(target, ability.dispelType) && TryCastAbility(ability, target, source))
-                return true;
+            if (!(ability.dispelMask & (1u << dispelType)) && ability.dispelType != dispelType)
+                continue;
+
+            for (Unit* target : party)
+            {
+                if (ai->HasAuraToDispel(target, dispelType) && TryCastAbility(ability, target, source))
+                    return true;
+            }
         }
     }
 

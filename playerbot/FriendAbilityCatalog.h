@@ -43,6 +43,7 @@ namespace ai
         std::string lowerName;
         uint32 flags = 0;
         uint32 dispelType = 0;
+        uint32 dispelMask = 0;
         float minRange = 0.0f;
         float maxRange = 0.0f;
         int32 duration = 0;
