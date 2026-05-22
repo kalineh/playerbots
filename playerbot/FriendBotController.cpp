@@ -25,7 +25,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v11";
+    const char* FRIEND_BOT_VERSION = "v12";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -3527,30 +3527,69 @@ bool FriendBotController::MoveToFriendTravelTarget(const FriendSituation& situat
     WorldPosition from(bot);
     const bool serviceTravelTarget = situation.travelTargetPurpose == FRIEND_VENDOR_TRAVEL_PURPOSE ||
         situation.travelTargetPurpose == FRIEND_REPAIR_TRAVEL_PURPOSE;
-    if (serviceTravelTarget && from.distance(destination) < 1.25f && !sServerFacade.isMoving(bot))
+    auto findServiceStandPoint = [&](float& outX, float& outY, float& outZ) -> bool
     {
         const float approachDistance = std::min<float>(INTERACTION_DISTANCE * 0.75f,
             std::max<float>(1.8f, target->GetDestination()->GetRadiusMin() * 0.6f));
-        float angle = std::atan2(bot->GetPositionY() - destination.getY(), bot->GetPositionX() - destination.getX());
+        float baseAngle = std::atan2(bot->GetPositionY() - destination.getY(), bot->GetPositionX() - destination.getX());
         if (std::fabs(bot->GetPositionX() - destination.getX()) < 0.05f &&
             std::fabs(bot->GetPositionY() - destination.getY()) < 0.05f)
-            angle = static_cast<float>(urand(0, 6283)) / 1000.0f;
+            baseAngle = static_cast<float>(urand(0, 6283)) / 1000.0f;
 
-        float x = destination.getX() + std::cos(angle) * approachDistance;
-        float y = destination.getY() + std::sin(angle) * approachDistance;
-        float z = destination.getZ();
-        if (NormalizeFriendMovePosition(x, y, z))
+        bool hasFallback = false;
+        float fallbackX = 0.0f;
+        float fallbackY = 0.0f;
+        float fallbackZ = 0.0f;
+
+        for (uint8 i = 0; i < 8; ++i)
         {
+            float angle = baseAngle + static_cast<float>(i) * 0.785398f;
+            float x = destination.getX() + std::cos(angle) * approachDistance;
+            float y = destination.getY() + std::sin(angle) * approachDistance;
+            float z = destination.getZ();
+            if (!NormalizeFriendMovePosition(x, y, z))
+                continue;
+
+            if (!hasFallback)
+            {
+                fallbackX = x;
+                fallbackY = y;
+                fallbackZ = z;
+                hasFallback = true;
+            }
+
             WorldPosition standPoint(bot->GetMapId(), x, y, z);
             if (from.canPathTo(standPoint, bot) && bot->IsWithinLOS(x, y, z + bot->GetCollisionHeight(), true))
             {
-                ClearFriendMovement(false);
-                if (MoveFriendPoint(x, y, z))
-                {
-                    SetResult(lastIntent, "stand near travel target", FriendExecutionResult::Done);
-                    ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
-                    return true;
-                }
+                outX = x;
+                outY = y;
+                outZ = z;
+                return true;
+            }
+        }
+
+        if (!hasFallback)
+            return false;
+
+        outX = fallbackX;
+        outY = fallbackY;
+        outZ = fallbackZ;
+        return true;
+    };
+
+    if (serviceTravelTarget && from.distance(destination) < 1.25f && !sServerFacade.isMoving(bot))
+    {
+        float x = 0.0f;
+        float y = 0.0f;
+        float z = 0.0f;
+        if (findServiceStandPoint(x, y, z))
+        {
+            ClearFriendMovement(false);
+            if (MoveFriendPoint(x, y, z))
+            {
+                SetResult(lastIntent, "stand near travel target", FriendExecutionResult::Done);
+                ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
+                return true;
             }
         }
     }
@@ -3578,26 +3617,10 @@ bool FriendBotController::MoveToFriendTravelTarget(const FriendSituation& situat
     float z = destination.getZ();
     if (serviceTravelTarget)
     {
-        const float approachDistance = std::min<float>(INTERACTION_DISTANCE * 0.75f,
-            std::max<float>(1.8f, target->GetDestination()->GetRadiusMin() * 0.6f));
-        float angle = std::atan2(bot->GetPositionY() - destination.getY(), bot->GetPositionX() - destination.getX());
-        if (std::fabs(bot->GetPositionX() - destination.getX()) < 0.05f &&
-            std::fabs(bot->GetPositionY() - destination.getY()) < 0.05f)
-            angle = static_cast<float>(urand(0, 6283)) / 1000.0f;
-
-        float standX = destination.getX() + std::cos(angle) * approachDistance;
-        float standY = destination.getY() + std::sin(angle) * approachDistance;
-        float standZ = destination.getZ();
-        if (NormalizeFriendMovePosition(standX, standY, standZ))
+        if (!findServiceStandPoint(x, y, z))
         {
-            WorldPosition standPoint(bot->GetMapId(), standX, standY, standZ);
-            if (from.canPathTo(standPoint, bot) &&
-                bot->IsWithinLOS(standX, standY, standZ + bot->GetCollisionHeight(), true))
-            {
-                x = standX;
-                y = standY;
-                z = standZ;
-            }
+            SetResult(lastIntent, "move to travel target:no nearby point", FriendExecutionResult::BlockedNotPossible);
+            return false;
         }
     }
     else
