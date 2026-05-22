@@ -195,6 +195,10 @@ namespace ai
         Unit* GetCrowdControlTarget(const FriendSituation& situation, const FriendAbility& ability, Unit* currentDamageTarget) const;
         bool IsValidFriendDamageTarget(Unit* target, bool allowCrowdControlFallback) const;
         bool ShouldAvoidBreakingCrowdControl(Unit* target) const;
+        bool IsCrowdControlTargetWorthwhile(const FriendSituation& situation, const FriendAbility& ability,
+            Unit* target, Unit* currentDamageTarget) const;
+        bool IsPartyMeleeEngagedWith(Unit* target) const;
+        Unit* GetRaidIconTarget(uint8 icon) const;
         bool IsSkullTarget(Unit* target) const;
         bool IsMoonTarget(Unit* target) const;
         void SetCurrentDamageTarget(Unit* target, const std::string& reason);

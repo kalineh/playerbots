@@ -34,6 +34,9 @@ namespace
     const uint32 FRIEND_REPAIR_TRAVEL_PURPOSE = static_cast<uint32>(TravelDestinationPurpose::Repair);
     const uint32 FRIEND_GRIND_TRAVEL_PURPOSE = static_cast<uint32>(TravelDestinationPurpose::Grind);
     const uint32 FRIEND_EXPLORE_TRAVEL_PURPOSE = static_cast<uint32>(TravelDestinationPurpose::Explore);
+    const uint8 FRIEND_RTI_MOON = 4;
+    const uint8 FRIEND_RTI_SKULL = 7;
+    const float FRIEND_CC_MELEE_ENGAGED_DISTANCE = 5.0f;
 
     void AddActions(std::vector<std::string>& actions, std::initializer_list<const char*> names)
     {
@@ -1118,8 +1121,7 @@ Unit* FriendBotController::SelectDamageTarget(const FriendSituation& situation, 
     Unit* target = nullptr;
     if (ai->GetBot()->GetGroup())
     {
-        ObjectGuid skullGuid = ObjectGuid(ai->GetBot()->GetGroup()->GetTargetIcon(7));
-        target = ai->GetUnit(skullGuid);
+        target = GetRaidIconTarget(FRIEND_RTI_SKULL);
         if (Unit* selected = consider(target, "skull"))
             return selected;
     }
@@ -1202,25 +1204,38 @@ Unit* FriendBotController::GetCrowdControlTarget(const FriendSituation& situatio
         return nullptr;
 
     AiObjectContext* context = ai->GetAiObjectContext();
+    auto accept = [&](Unit* candidate) -> Unit*
+    {
+        return IsCrowdControlTargetWorthwhile(situation, ability, candidate, currentDamageTarget) ? candidate : nullptr;
+    };
+
     const bool currentTargetCasting = currentDamageTarget && currentDamageTarget->IsNonMeleeSpellCasted(false);
     if (ability.Has(FRIEND_ABILITY_INTERRUPT) && currentTargetCasting)
         return currentDamageTarget;
 
-    Unit* target = ai->GetUnit(situation.closestAttackerTargetingMeGuid);
-    if (PrefersSelfDefenseTarget(situation) && IsHostileTarget(ai, target) && !IsSkullTarget(target))
-        return target;
+    Unit* target = GetRaidIconTarget(FRIEND_RTI_MOON);
+    if (Unit* selected = accept(target))
+        return selected;
 
     target = GetContextValue<Unit*>(context, "rti cc target", nullptr);
-    if (IsHostileTarget(ai, target))
-        return target;
+    if (Unit* selected = accept(target))
+        return selected;
 
     target = ai->GetUnit(situation.rtiCcTargetGuid);
-    if (IsHostileTarget(ai, target))
-        return target;
+    if (Unit* selected = accept(target))
+        return selected;
+
+    target = ai->GetUnit(situation.closestAttackerTargetingMeGuid);
+    if (Unit* selected = accept(target))
+        return selected;
+
+    target = ai->GetUnit(situation.vulnerablePartyAttackerGuid);
+    if (Unit* selected = accept(target))
+        return selected;
 
     target = context->GetValue<Unit*>("cc target", ability.name)->Get();
-    if (IsHostileTarget(ai, target) && !IsSkullTarget(target))
-        return target;
+    if (Unit* selected = accept(target))
+        return selected;
 
     return nullptr;
 }
@@ -1253,16 +1268,90 @@ bool FriendBotController::ShouldAvoidBreakingCrowdControl(Unit* target) const
         PossibleAttackTargetsValue::HasUnBreakableCC(target, ai->GetBot());
 }
 
+bool FriendBotController::IsCrowdControlTargetWorthwhile(const FriendSituation& situation, const FriendAbility& ability,
+    Unit* target, Unit* currentDamageTarget) const
+{
+    if (!ai || !ai->GetBot() || !IsHostileTarget(ai, target))
+        return false;
+
+    if (ability.Has(FRIEND_ABILITY_INTERRUPT))
+        return target->IsNonMeleeSpellCasted(false);
+
+    if (IsSkullTarget(target))
+        return false;
+
+    if (IsMoonTarget(target))
+        return true;
+
+    const ObjectGuid targetGuid = target->GetObjectGuid();
+    const bool selfPeel = PrefersSelfDefenseTarget(situation) &&
+        situation.closestAttackerTargetingMeGuid == targetGuid;
+    const bool partyPeel = situation.vulnerablePartyAttackerGuid == targetGuid &&
+        (situation.vulnerablePartyHasThreat || situation.healerPartyHasThreat);
+
+    if (selfPeel)
+        return true;
+
+    if (partyPeel && currentDamageTarget != target && !IsPartyMeleeEngagedWith(target))
+        return true;
+
+    if (currentDamageTarget == target ||
+        situation.leaderTargetGuid == targetGuid ||
+        situation.rtiTargetGuid == targetGuid ||
+        IsPartyMeleeEngagedWith(target))
+        return false;
+
+    if (situation.possibleTargetsCount <= 1)
+        return false;
+
+    return true;
+}
+
+bool FriendBotController::IsPartyMeleeEngagedWith(Unit* target) const
+{
+    if (!ai || !ai->GetBot() || !target || !target->IsInWorld())
+        return false;
+
+    Group* group = ai->GetBot()->GetGroup();
+    if (!group)
+        return false;
+
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->getSource();
+        if (!member || member == ai->GetBot() || !member->IsAlive() ||
+            member->GetMapId() != target->GetMapId() || !ai->IsSafe(member))
+            continue;
+
+        if (sServerFacade.GetDistance2d(member, target) > FRIEND_CC_MELEE_ENGAGED_DISTANCE)
+            continue;
+
+        if (member->GetSelectionGuid() == target->GetObjectGuid() || member->GetVictim() == target)
+            return true;
+    }
+
+    return false;
+}
+
+Unit* FriendBotController::GetRaidIconTarget(uint8 icon) const
+{
+    if (!ai || !ai->GetBot() || !ai->GetBot()->GetGroup())
+        return nullptr;
+
+    ObjectGuid guid = ObjectGuid(ai->GetBot()->GetGroup()->GetTargetIcon(icon));
+    return guid ? ai->GetUnit(guid) : nullptr;
+}
+
 bool FriendBotController::IsSkullTarget(Unit* target) const
 {
-    return ai && ai->GetBot() && target && ai->GetBot()->GetGroup() &&
-        ai->GetBot()->GetGroup()->GetTargetIcon(7) == target->GetObjectGuid();
+    Unit* iconTarget = GetRaidIconTarget(FRIEND_RTI_SKULL);
+    return target && iconTarget && iconTarget->GetObjectGuid() == target->GetObjectGuid();
 }
 
 bool FriendBotController::IsMoonTarget(Unit* target) const
 {
-    return ai && ai->GetBot() && target && ai->GetBot()->GetGroup() &&
-        ai->GetBot()->GetGroup()->GetTargetIcon(4) == target->GetObjectGuid();
+    Unit* iconTarget = GetRaidIconTarget(FRIEND_RTI_MOON);
+    return target && iconTarget && iconTarget->GetObjectGuid() == target->GetObjectGuid();
 }
 
 void FriendBotController::SetCurrentDamageTarget(Unit* target, const std::string& reason)
