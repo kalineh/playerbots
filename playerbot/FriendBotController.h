@@ -285,6 +285,7 @@ namespace ai
         bool IsIdleMovePositionSafe(const FriendSituation& situation, Unit* leader, float x, float y, float z) const;
         bool NormalizeFriendMovePosition(float& x, float& y, float& z) const;
         bool MoveFriendPoint(float x, float y, float z);
+        bool MoveToExplorePoint(const FriendSituation& situation);
         bool MoveInLeaderOrbit(const FriendSituation& situation, const std::string& action, bool urgent);
         bool PreferFreeDamage(const FriendSituation& situation) const;
         bool IsTargetSetupAction(const std::string& name) const;

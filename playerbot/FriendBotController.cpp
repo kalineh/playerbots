@@ -27,7 +27,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v23";
+    const char* FRIEND_BOT_VERSION = "v24";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -38,7 +38,6 @@ namespace
     const uint32 FRIEND_VENDOR_TRAVEL_PURPOSE = static_cast<uint32>(TravelDestinationPurpose::Vendor);
     const uint32 FRIEND_REPAIR_TRAVEL_PURPOSE = static_cast<uint32>(TravelDestinationPurpose::Repair);
     const uint32 FRIEND_GRIND_TRAVEL_PURPOSE = static_cast<uint32>(TravelDestinationPurpose::Grind);
-    const uint32 FRIEND_EXPLORE_TRAVEL_PURPOSE = static_cast<uint32>(TravelDestinationPurpose::Explore);
     const uint8 FRIEND_RTI_MOON = 4;
     const uint8 FRIEND_RTI_SKULL = 7;
     const float FRIEND_CC_MELEE_ENGAGED_DISTANCE = 5.0f;
@@ -291,17 +290,26 @@ namespace
         return count;
     }
 
-    std::string UsageQualifier(ItemUsage usage)
+    bool ShouldFriendSellItem(PlayerbotAI* ai, Item* item)
     {
-        return "usage " + std::to_string(static_cast<uint8>(usage));
-    }
+        if (!ai || !ai->GetAiObjectContext() || !item || item->IsInTrade() ||
+            !item->GetProto() || !item->GetProto()->SellPrice)
+            return false;
 
-    void AddUniqueItems(std::list<Item*>& target, const std::list<Item*>& source)
-    {
-        for (Item* item : source)
+        AiObjectContext* context = ai->GetAiObjectContext();
+        ItemUsage usage = AI_VALUE2_LAZY(ItemUsage, "item usage", ItemQualifier(item).GetQualifier());
+        switch (usage)
         {
-            if (item && std::find(target.begin(), target.end(), item) == target.end())
-                target.push_back(item);
+            case ItemUsage::ITEM_USAGE_NONE:
+            case ItemUsage::ITEM_USAGE_BAD_EQUIP:
+            case ItemUsage::ITEM_USAGE_BROKEN_EQUIP:
+            case ItemUsage::ITEM_USAGE_AH:
+            case ItemUsage::ITEM_USAGE_BROKEN_AH:
+            case ItemUsage::ITEM_USAGE_VENDOR:
+            case ItemUsage::ITEM_USAGE_FORCE_GREED:
+                return true;
+            default:
+                return false;
         }
     }
 
@@ -311,12 +319,13 @@ namespace
         if (!ai)
             return result;
 
-        AddUniqueItems(result, ai->InventoryParseItems("vendor", IterateItemsMask::ITERATE_ITEMS_IN_BAGS));
-        AddUniqueItems(result, ai->InventoryParseItems("gray", IterateItemsMask::ITERATE_ITEMS_IN_BAGS));
-        AddUniqueItems(result, ai->InventoryParseItems("ah", IterateItemsMask::ITERATE_ITEMS_IN_BAGS));
-        AddUniqueItems(result, ai->InventoryParseItems(UsageQualifier(ItemUsage::ITEM_USAGE_BAD_EQUIP), IterateItemsMask::ITERATE_ITEMS_IN_BAGS));
-        AddUniqueItems(result, ai->InventoryParseItems(UsageQualifier(ItemUsage::ITEM_USAGE_BROKEN_EQUIP), IterateItemsMask::ITERATE_ITEMS_IN_BAGS));
-        AddUniqueItems(result, ai->InventoryParseItems(UsageQualifier(ItemUsage::ITEM_USAGE_FORCE_GREED), IterateItemsMask::ITERATE_ITEMS_IN_BAGS));
+        std::list<Item*> items = ai->InventoryParseItems("inventory", IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
+        for (Item* item : items)
+        {
+            if (ShouldFriendSellItem(ai, item))
+                result.push_back(item);
+        }
+
         return result;
     }
 
@@ -575,7 +584,7 @@ void FriendBotController::RunTick(bool minimal)
     if (!ExecuteIntent(intent, situation))
     {
         SetResult(intent, "", FriendExecutionResult::IntentionalIdle);
-        ai->SetActionDuration(minimal ? sPlayerbotAIConfig.reactDelay : sPlayerbotAIConfig.globalCoolDown);
+        ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
     }
 
     MaybeSayStatus(situation);
@@ -1274,6 +1283,10 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
     const bool relaxedOutOfCombat = !situation.inCombat && !localPartyInCombat &&
         (!partyNearby || situation.lowestPartyHealth >= FRIEND_HEAL_TOP_OFF_HEALTH);
     const bool resupplyAllowed = command == FriendCommand::Shop || now >= nextResupplyAttemptAt;
+
+    if (!soloFree && command == FriendCommand::None && relaxedOutOfCombat &&
+        situation.leaderSafe && situation.leaderDistance > softLeash)
+        return FriendIntent::ReturnToParty;
 
     if (relaxedOutOfCombat && IsSafeForTaskActivity(situation) &&
         (mode == FriendMode::Solo || mode == FriendMode::Party))
@@ -3849,9 +3862,10 @@ bool FriendBotController::MoveToFriendTravelTarget(const FriendSituation& situat
         }
     }
 
-    const bool arrived = serviceTravelTarget ?
-        from.distance(destination) <= INTERACTION_DISTANCE :
-        target->GetDestination()->IsIn(from);
+    const float destinationRadius = target->GetDestination()->GetRadiusMin();
+    const float localTravelRadius = serviceTravelTarget ? INTERACTION_DISTANCE :
+        std::max<float>(INTERACTION_DISTANCE, std::min<float>(destinationRadius, mode == FriendMode::Solo ? 35.0f : 22.0f));
+    const bool arrived = from.distance(destination) <= localTravelRadius;
     if (arrived)
     {
         target->SetStatus(TravelStatus::TRAVEL_STATUS_WORK);
@@ -3880,7 +3894,7 @@ bool FriendBotController::MoveToFriendTravelTarget(const FriendSituation& situat
     }
     else
     {
-        const float radius = target->GetDestination()->GetRadiusMin();
+        const float radius = std::min<float>(destinationRadius, mode == FriendMode::Solo ? 35.0f : 22.0f);
         if (radius > INTERACTION_DISTANCE)
         {
             const float angle = static_cast<float>(urand(0, 6283)) / 1000.0f;
@@ -3956,6 +3970,93 @@ bool FriendBotController::MoveFriendPoint(float x, float y, float z)
 
     FriendPointMovementAction move(ai);
     return move.Move(x, y, z);
+}
+
+bool FriendBotController::MoveToExplorePoint(const FriendSituation& situation)
+{
+    if (!ai || !ai->GetBot() || !ai->GetAiObjectContext() || !ai->CanMove())
+        return false;
+
+    Player* bot = ai->GetBot();
+    if ((situation.travelTargetPreparing || situation.travelTargetTraveling || situation.travelTargetActive ||
+        situation.travelTargetWorking) && !IsServiceTravelPurpose(situation.travelTargetPurpose))
+        ClearFriendTravelTarget();
+
+    Unit* leader = ai->GetGroupMaster();
+    if (!leader || leader->GetObjectGuid() != situation.leaderGuid)
+        leader = situation.leaderGuid ? ai->GetUnit(situation.leaderGuid) : nullptr;
+
+    const bool keepNearLeader = mode != FriendMode::Solo;
+    if (keepNearLeader && (!leader || !leader->IsInWorld() || leader->GetMapId() != bot->GetMapId() || !ai->IsSafe(leader)))
+        return false;
+
+    const bool useHeading = situation.partyHeadingActive && mode != FriendMode::Dungeon;
+    const float headingAngle = useHeading ? std::atan2(situation.partyHeadingY, situation.partyHeadingX) : 0.0f;
+    const float minDistance = mode == FriendMode::Solo ? 18.0f : 10.0f;
+    const float maxDistance = mode == FriendMode::Solo ? 42.0f : 24.0f;
+    WorldPosition from(bot);
+    AiObjectContext* context = ai->GetAiObjectContext();
+
+    for (uint8 attempt = 0; attempt < 10; ++attempt)
+    {
+        float angle = static_cast<float>(urand(0, 6283)) / 1000.0f;
+        if (useHeading && attempt < 7)
+        {
+            const float spread = mode == FriendMode::Solo ? 1.4f : 0.95f;
+            angle = headingAngle + (static_cast<float>(urand(0, 2000)) / 1000.0f - 1.0f) * spread;
+        }
+
+        const float distance = minDistance + static_cast<float>(urand(0, 1000)) / 1000.0f * (maxDistance - minDistance);
+        float x = bot->GetPositionX() + std::cos(angle) * distance;
+        float y = bot->GetPositionY() + std::sin(angle) * distance;
+        float z = bot->GetPositionZ();
+        if (!NormalizeFriendMovePosition(x, y, z))
+            continue;
+
+        WorldPosition to(bot->GetMapId(), x, y, z);
+        if (!from.canPathTo(to, bot) || !bot->IsWithinLOS(x, y, z + bot->GetCollisionHeight(), true))
+            continue;
+
+        if (keepNearLeader)
+        {
+            const float leaderDx = leader->GetPositionX() - x;
+            const float leaderDy = leader->GetPositionY() - y;
+            if (std::sqrt(leaderDx * leaderDx + leaderDy * leaderDy) > SoftLeashDistance(situation))
+                continue;
+        }
+
+        bool hostileSafe = true;
+        std::list<ObjectGuid> nearbyNpcs = context->GetValue<std::list<ObjectGuid> >("nearest npcs no los")->Get();
+        for (std::list<ObjectGuid>::const_iterator itr = nearbyNpcs.begin(); itr != nearbyNpcs.end(); ++itr)
+        {
+            Unit* hostile = ai->GetUnit(*itr);
+            if (!IsHostileTarget(ai, hostile))
+                continue;
+
+            const float candidateDx = hostile->GetPositionX() - x;
+            const float candidateDy = hostile->GetPositionY() - y;
+            const float candidateDistance = std::sqrt(candidateDx * candidateDx + candidateDy * candidateDy);
+            if (candidateDistance < FRIEND_IDLE_MOVE_HOSTILE_BUFFER)
+            {
+                hostileSafe = false;
+                break;
+            }
+        }
+
+        if (!hostileSafe)
+            continue;
+
+        ClearFriendMovement(false);
+        if (!MoveFriendPoint(x, y, z))
+            continue;
+
+        SetResult(lastIntent, "explore nearby", FriendExecutionResult::Done);
+        ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
+        return true;
+    }
+
+    SetResult(lastIntent, "explore blocked:no safe point", FriendExecutionResult::BlockedNotPossible);
+    return false;
 }
 
 bool FriendBotController::IsSafeForTownChores(const FriendSituation& situation) const
@@ -4679,13 +4780,13 @@ bool FriendBotController::ExecuteCurrentTask(const FriendSituation& situation)
         }
 
         case FriendTaskType::ExploreNearby:
-            if (ExecuteTaskTravelGoal(situation, FRIEND_EXPLORE_TRAVEL_PURPOSE, FriendTaskType::HangOut,
-                "travel to explore", {
+            if (MoveToExplorePoint(situation))
+            {
+                MaybeSayActivity(situation, "explore", {
                     "I'm going to look around a bit.",
                     "I'll scout around nearby."
-                }))
-            {
-                executionNextActionAt = IsFriendMovementAction(lastAction) ? now : now + urand(6, 14);
+                }, mode == FriendMode::Solo ? 45 : 20, 90);
+                executionNextActionAt = now + urand(4, 10);
                 return true;
             }
             break;
@@ -4718,13 +4819,13 @@ bool FriendBotController::ExecuteCurrentTask(const FriendSituation& situation)
                     default: ai->GetBot()->HandleEmoteCommand(EMOTE_ONESHOT_TALK); break;
                 }
 
-                executionNextActionAt = now + urand(8, 20);
+                executionNextActionAt = now + urand(3, 7);
                 SetResult(lastIntent, "social emote", FriendExecutionResult::Done);
                 ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
                 return true;
             }
 
-            executionNextActionAt = now + urand(6, 18);
+            executionNextActionAt = now + urand(2, 5);
             SetResult(lastIntent, "hang out", FriendExecutionResult::Done);
             ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
             return true;
@@ -4776,12 +4877,29 @@ bool FriendBotController::ExecuteTaskTravelGoal(const FriendSituation& situation
         return false;
     }
 
+    if (taskTravelRequested && taskTravelPurpose == purpose && !IsServiceTravelPurpose(purpose) &&
+        (situation.travelTargetPreparing || situation.travelTargetTraveling || situation.travelTargetActive))
+    {
+        const uint32 maxTravelDistance = mode == FriendMode::Solo ? 450 : 140;
+        if (!situation.travelTargetSameMap ||
+            (situation.travelTargetDistanceKnown && situation.travelTargetDistance > maxTravelDistance))
+        {
+            taskTravelRequested = false;
+            taskTravelPurpose = 0;
+            ClearFriendTravelTarget();
+            SetResult(lastIntent, action + ":target too far", FriendExecutionResult::BlockedNotUseful);
+            ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+            return false;
+        }
+    }
+
     if (situation.travelTargetWorking && situation.travelTargetPurpose == purpose)
     {
         executionTask = workGoal;
         executionTaskUntil = time(nullptr) + urand(45, 120);
         taskTravelRequested = false;
         taskTravelPurpose = 0;
+        ClearFriendTravelTarget();
         SetResult(lastIntent, "arrived " + TaskName(workGoal), FriendExecutionResult::Done);
         ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
         return true;
