@@ -19,7 +19,24 @@ namespace ai
             if (!inviter)
                 return false;
 
-			if (!ai->GetSecurity()->CheckLevelFor(PlayerbotSecurityLevel::PLAYERBOT_SECURITY_INVITE, false, inviter))
+            DenyReason denyReason = DenyReason::PLAYERBOT_DENY_NONE;
+            PlayerbotSecurityLevel securityLevel = ai->GetSecurity()->LevelFor(inviter, &denyReason);
+            bool groupOnlyBlock = denyReason == DenyReason::PLAYERBOT_DENY_NOT_LEADER ||
+                denyReason == DenyReason::PLAYERBOT_DENY_FULL_GROUP;
+
+            if (bot->GetGroup() &&
+                (securityLevel >= PlayerbotSecurityLevel::PLAYERBOT_SECURITY_INVITE || groupOnlyBlock))
+            {
+                WorldPacket leave;
+                std::string member = bot->GetName();
+                leave << uint32(PARTY_OP_LEAVE) << member << uint32(0);
+                bot->GetSession()->HandleGroupDisbandOpcode(leave);
+
+                denyReason = DenyReason::PLAYERBOT_DENY_NONE;
+                securityLevel = ai->GetSecurity()->LevelFor(inviter, &denyReason);
+            }
+
+            if (securityLevel < PlayerbotSecurityLevel::PLAYERBOT_SECURITY_INVITE)
             {
                 WorldPacket data(SMSG_GROUP_DECLINE, 10);
                 data << bot->GetName();

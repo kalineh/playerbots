@@ -25,7 +25,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v6";
+    const char* FRIEND_BOT_VERSION = "v7";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -187,6 +187,92 @@ namespace
     bool Contains(const std::string& value, const std::string& needle)
     {
         return value.find(needle) != std::string::npos;
+    }
+
+    bool IsSelfOnlyCoreBuffName(const std::string& name)
+    {
+        return Contains(name, "inner fire") ||
+            Contains(name, "mage armor") ||
+            Contains(name, "ice armor") ||
+            Contains(name, "frost armor") ||
+            Contains(name, "molten armor") ||
+            Contains(name, "demon armor") ||
+            Contains(name, "demon skin") ||
+            Contains(name, "fel armor") ||
+            Contains(name, "aspect of the hawk") ||
+            Contains(name, "aspect of the viper") ||
+            Contains(name, "lightning shield") ||
+            Contains(name, "water shield");
+    }
+
+    uint32 CountInventoryItems(Player* bot)
+    {
+        if (!bot)
+            return 0;
+
+        uint32 count = 0;
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        {
+            if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                count += item->GetCount();
+        }
+
+        for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+        {
+            const Bag* pBag = (Bag*)bot->GetItemByPos(INVENTORY_SLOT_BAG_0, bag);
+            if (!pBag)
+                continue;
+
+            for (uint8 slot = 0; slot < pBag->GetBagSize(); ++slot)
+            {
+                if (Item* item = bot->GetItemByPos(bag, slot))
+                    count += item->GetCount();
+            }
+        }
+
+        return count;
+    }
+
+    void ReportServiceTransaction(PlayerbotAI* ai, const std::string& action, Creature* npc,
+        uint32 moneyBefore, uint32 moneyAfter, uint32 itemsBefore, uint32 itemsAfter)
+    {
+        if (!ai || !ai->GetMaster() || moneyBefore == moneyAfter)
+            return;
+
+        std::ostringstream out;
+        if (action == "sell" && moneyAfter > moneyBefore)
+        {
+            out << "Sold";
+            if (itemsBefore > itemsAfter)
+                out << " " << (itemsBefore - itemsAfter) << " item(s)";
+            else
+                out << " items";
+
+            out << " for " << ChatHelper::formatMoney(moneyAfter - moneyBefore);
+        }
+        else if (action == "buy" && moneyBefore > moneyAfter)
+        {
+            out << "Bought";
+            if (itemsAfter > itemsBefore)
+                out << " " << (itemsAfter - itemsBefore) << " item(s)";
+            else
+                out << " supplies";
+
+            out << " for " << ChatHelper::formatMoney(moneyBefore - moneyAfter);
+        }
+        else if (action == "repair" && moneyBefore > moneyAfter)
+        {
+            out << "Repaired gear for " << ChatHelper::formatMoney(moneyBefore - moneyAfter);
+        }
+        else
+        {
+            return;
+        }
+
+        if (npc)
+            out << " at " << npc->GetName();
+
+        ai->TellPlayerNoFacing(ai->GetMaster(), out.str(), PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
     }
 
     const char* TravelStateName(const FriendSituation& situation)
@@ -1058,9 +1144,7 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
         return FriendIntent::PullWithParty;
 
     if (relaxedOutOfCombat && IsSafeForIdleActivity(situation) &&
-        (mode == FriendMode::Solo ||
-         (mode == FriendMode::Party &&
-          (situation.calmDowntimeSeconds >= 8 || situation.possibleTargetsCount > 0 || situation.hasCreatureLoot))))
+        (mode == FriendMode::Solo || mode == FriendMode::Party))
         return FriendIntent::Adventure;
 
     if (relaxedOutOfCombat)
@@ -1461,13 +1545,21 @@ FriendExecutionResult FriendBotController::TryServiceAction(const std::string& n
     }
 
     Player* bot = ai->GetBot();
+    const uint32 moneyBefore = bot->GetMoney();
+    const uint32 itemsBefore = CountInventoryItems(bot);
     bot->SetSelectionGuid(npc->GetObjectGuid());
     sServerFacade.SetFacingTo(bot, npc);
 
+    FriendExecutionResult result = FriendExecutionResult::None;
     if (param.empty())
-        return TryAction(name, "rpg action");
+        result = TryAction(name, "rpg action");
+    else
+        result = TryActionWithParam(name, param, "rpg action");
 
-    return TryActionWithParam(name, param, "rpg action");
+    if (result == FriendExecutionResult::Done)
+        ReportServiceTransaction(ai, name, npc, moneyBefore, bot->GetMoney(), itemsBefore, CountInventoryItems(bot));
+
+    return result;
 }
 
 void FriendBotController::ClearFriendTravelTarget()
@@ -2815,8 +2907,13 @@ bool FriendBotController::TryCatalogSupport(const FriendSituation& situation, co
         if (ability.powerType != POWER_MANA && (ability.manaCost > 0 || ability.manaCostPercent > 0))
             continue;
 
+        Player* bot = ai->GetBot();
+        const bool selfOnlyBuff = IsSelfOnlyCoreBuffName(ability.lowerName);
         for (Unit* target : party)
         {
+            if (selfOnlyBuff && target != bot)
+                continue;
+
             if (!HasEquivalentAura(ability, target) && TryCastAbility(ability, target, source))
                 return true;
         }
@@ -3934,10 +4031,10 @@ bool FriendBotController::ExecuteAdventureActivity(const FriendSituation& situat
     if (situation.hasCreatureLoot && ExecuteLoot(situation))
         return true;
 
-    if (ExecuteIdleGoal(situation))
+    if (TryCatalogSupport(situation, "friend support"))
         return true;
 
-    if (TryCatalogSupport(situation, "friend support"))
+    if (ExecuteIdleGoal(situation))
         return true;
 
     if (mode != FriendMode::Solo && situation.leaderSafe && situation.leaderDistance > PreferredLeaderDistance(situation))
@@ -4003,7 +4100,7 @@ FriendIdleGoal FriendBotController::SelectIdleGoal(const FriendSituation& situat
     uint32 socialBias = personality % 25;
     uint32 gatherBias = (personality / 7) % 30;
     uint32 grindBias = (personality / 13) % 30;
-    const uint32 boredom = std::min<uint32>(80, situation.calmDowntimeSeconds);
+    const uint32 boredom = std::min<uint32>(240, situation.calmDowntimeSeconds * 4);
     const uint32 forwardBias = (mode != FriendMode::Dungeon && situation.partyHeadingActive) ?
         static_cast<uint32>(situation.partyHeadingConfidence) : 0;
     const bool canGather = HasGatherSkill();
@@ -4047,26 +4144,29 @@ FriendIdleGoal FriendBotController::SelectIdleGoal(const FriendSituation& situat
     }
     else
     {
-        goals.push_back({ FriendIdleGoal::OrbitLeader, 30 + socialBias / 2 });
-        goals.push_back({ FriendIdleGoal::Loiter, 15 });
+        const uint32 baseOrbit = 30 + socialBias / 2;
+        const uint32 orbitWeight = baseOrbit > boredom / 10 ? baseOrbit - boredom / 10 : 8;
+        const uint32 loiterWeight = 15 > boredom / 16 ? 15 - boredom / 16 : 4;
+        goals.push_back({ FriendIdleGoal::OrbitLeader, std::max<uint32>(8, orbitWeight) });
+        goals.push_back({ FriendIdleGoal::Loiter, std::max<uint32>(4, loiterWeight) });
 
         if (needsTownChores && canTryResupply && IsSafeForTownChores(situation))
             goals.push_back({ FriendIdleGoal::Resupply, 45 });
 
         if (canGather && situation.botMana >= sPlayerbotAIConfig.mediumMana)
         {
-            goals.push_back({ FriendIdleGoal::GatherNearby, 28 + gatherBias + boredom / 3 });
+            goals.push_back({ FriendIdleGoal::GatherNearby, 28 + gatherBias + boredom / 2 });
             if (!urgentTownChores)
-                goals.push_back({ FriendIdleGoal::TravelToGather, 8 + gatherBias / 4 + boredom / 5 + forwardBias / 8 });
+                goals.push_back({ FriendIdleGoal::TravelToGather, 8 + gatherBias / 4 + boredom / 3 + forwardBias / 8 });
         }
 
         if (partyComfortable && situation.possibleTargetsCount > 0 && situation.botMana >= sPlayerbotAIConfig.mediumMana)
-            goals.push_back({ FriendIdleGoal::GrindNearby, 42 + grindBias + boredom / 2 + forwardBias / 6 });
+            goals.push_back({ FriendIdleGoal::GrindNearby, 42 + grindBias + boredom + forwardBias / 6 });
         else if (partyComfortable && !urgentTownChores &&
             situation.botMana >= sPlayerbotAIConfig.mediumMana)
         {
-            goals.push_back({ FriendIdleGoal::TravelToGrind, 10 + grindBias / 3 + boredom / 5 + forwardBias / 8 });
-            goals.push_back({ FriendIdleGoal::ExploreNearby, 12 + boredom / 4 + forwardBias / 6 });
+            goals.push_back({ FriendIdleGoal::TravelToGrind, 10 + grindBias / 3 + boredom / 2 + forwardBias / 8 });
+            goals.push_back({ FriendIdleGoal::ExploreNearby, 12 + boredom / 2 + forwardBias / 6 });
         }
     }
 
@@ -4207,7 +4307,7 @@ bool FriendBotController::ExecuteCurrentIdleGoal(const FriendSituation& situatio
             break;
 
         case FriendIdleGoal::Loiter:
-            if (mode == FriendMode::Solo && !NeedsTownChores(situation) && situation.calmDowntimeSeconds >= 15)
+            if (mode == FriendMode::Solo && !NeedsTownChores(situation))
             {
                 if (situation.possibleTargetsCount > 0 &&
                     situation.botMana >= sPlayerbotAIConfig.lowMana &&
@@ -4265,7 +4365,6 @@ bool FriendBotController::ExecuteIdleTravelGoal(const FriendSituation& situation
         situation.botHealth >= FRIEND_HEAL_TOP_OFF_HEALTH &&
         situation.lowestPartyHealth >= FRIEND_HEAL_TOP_OFF_HEALTH &&
         situation.botMana >= sPlayerbotAIConfig.lowMana &&
-        situation.calmDowntimeSeconds >= 20 &&
         !NeedsTownChores(situation);
     if (!soloTravel && !partyBoredTravel)
         return false;
