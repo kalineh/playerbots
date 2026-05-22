@@ -27,7 +27,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v25";
+    const char* FRIEND_BOT_VERSION = "v26";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -290,7 +290,7 @@ namespace
         return count;
     }
 
-    bool ShouldFriendSellItem(PlayerbotAI* ai, Item* item)
+    bool ShouldFriendSellItem(PlayerbotAI* ai, Item* item, bool aggressive)
     {
         if (!ai || !ai->GetAiObjectContext() || !item || item->IsInTrade() ||
             !item->GetProto() || !item->GetProto()->SellPrice)
@@ -308,12 +308,17 @@ namespace
             case ItemUsage::ITEM_USAGE_VENDOR:
             case ItemUsage::ITEM_USAGE_FORCE_GREED:
                 return true;
+            case ItemUsage::ITEM_USAGE_EQUIP:
+            case ItemUsage::ITEM_USAGE_SKILL:
+            case ItemUsage::ITEM_USAGE_GUILD_TASK:
+            case ItemUsage::ITEM_USAGE_DISENCHANT:
+                return aggressive;
             default:
                 return false;
         }
     }
 
-    std::list<Item*> FriendSellItems(PlayerbotAI* ai)
+    std::list<Item*> FriendSellItems(PlayerbotAI* ai, bool aggressive)
     {
         std::list<Item*> result;
         if (!ai)
@@ -322,7 +327,7 @@ namespace
         std::list<Item*> items = ai->InventoryParseItems("inventory", IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
         for (Item* item : items)
         {
-            if (ShouldFriendSellItem(ai, item))
+            if (ShouldFriendSellItem(ai, item, aggressive))
                 result.push_back(item);
         }
 
@@ -359,10 +364,10 @@ namespace
         return true;
     }
 
-    uint32 CountFriendSellItems(PlayerbotAI* ai)
+    uint32 CountFriendSellItems(PlayerbotAI* ai, bool aggressive)
     {
         uint32 count = 0;
-        for (Item* item : FriendSellItems(ai))
+        for (Item* item : FriendSellItems(ai, aggressive))
         {
             if (item && item->GetProto() && item->GetProto()->SellPrice)
                 count += item->GetCount();
@@ -936,6 +941,7 @@ std::string FriendBotController::FormatReport() const
     if (lastSituation.leaderLevel)
         out << "/" << static_cast<uint32>(lastSituation.leaderLevel);
     out << ", bag=" << static_cast<uint32>(lastSituation.bagSpace) << "%";
+    out << "/" << lastSituation.sellableItems << " sell";
     out << ", dur=" << static_cast<uint32>(lastSituation.durability) << "%";
     out << ", calm=" << lastSituation.calmDowntimeSeconds << "s";
     out << ", town=" << (lastSituation.inTown ? "y" : "n");
@@ -1016,12 +1022,14 @@ FriendSituation FriendBotController::BuildSituation()
         situation.durability = GetContextValue<uint8>(context, "durability inventory", 100);
         ReadFriendTravelSnapshot(bot, context->GetValue<TravelTarget*>("travel target")->Get(), situation);
 
-        uint32 sellItems = CountFriendSellItems(ai);
+        const bool aggressiveSell = command == FriendCommand::Shop || situation.bagSpace >= 90;
+        uint32 sellItems = CountFriendSellItems(ai, aggressiveSell);
         uint32 minRepairCost = context->GetValue<uint32>("min repair cost")->Get();
         uint32 repairMoney = context->GetValue<uint32>("free money for", static_cast<uint32>(NeedMoneyFor::repair))->Get();
         situation.trainCost = context->GetValue<uint32>("train cost", TRAINER_TYPE_CLASS)->Get();
         situation.gearBudget = context->GetValue<uint32>("free money for", static_cast<uint32>(NeedMoneyFor::gear))->Get();
-        situation.shouldSell = sellItems > 0;
+        situation.sellableItems = sellItems;
+        situation.shouldSell = sellItems > 0 || situation.bagSpace >= 95;
         situation.shouldRepair = situation.durability < 95 && minRepairCost > 0 && minRepairCost <= repairMoney;
         situation.lowFood = context->GetValue<uint32>("item count", "food")->Get() < 5;
         situation.lowWater = bot->GetMaxPower(POWER_MANA) > 0 && context->GetValue<uint32>("item count", "water")->Get() < 5;
@@ -1405,8 +1413,8 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
         {
             if (HasGatherSkill() && situation.botMana >= sPlayerbotAIConfig.lowMana)
                 add(FriendIntent::Gather, mode == FriendMode::Solo ?
-                    45 + gatherBias + boredom / 2 + forwardBias / 4 :
-                    22 + gatherBias + boredom / 3 + forwardBias / 8);
+                    38 + gatherBias + boredom / 4 + forwardBias / 5 :
+                    18 + gatherBias + boredom / 5 + forwardBias / 10);
 
             if (situation.possibleTargetsCount > 0 && situation.botHealth >= FRIEND_HEAL_TOP_OFF_HEALTH &&
                 situation.botMana >= (mode == FriendMode::Solo ? sPlayerbotAIConfig.lowMana : sPlayerbotAIConfig.mediumMana))
@@ -1421,12 +1429,12 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
             if (!urgentTownChores && situation.botHealth >= FRIEND_HEAL_TOP_OFF_HEALTH &&
                 situation.botMana >= sPlayerbotAIConfig.lowMana)
                 add(FriendIntent::Explore, mode == FriendMode::Solo ?
-                    55 + boredom + forwardBias / 3 :
-                    (partyComfortable ? 28 + boredom + forwardBias / 5 : 0));
+                    34 + boredom / 3 + forwardBias / 4 :
+                    (partyComfortable ? 16 + boredom / 4 + forwardBias / 6 : 0));
         }
 
         add(FriendIntent::BuffOrCureParty, mode == FriendMode::Solo ? 8 : 18);
-        add(FriendIntent::HangOut, mode == FriendMode::Solo ? 8 + socialBias / 5 : 26 + socialBias / 2);
+        add(FriendIntent::HangOut, mode == FriendMode::Solo ? 28 + socialBias / 2 : 30 + socialBias / 2);
 
         if (candidates.empty())
             return FriendIntent::FollowOrIdle;
@@ -1906,8 +1914,9 @@ bool FriendBotController::TryDirectSellItems(Creature* npc, const std::string& q
     if (!bot->GetNPCIfCanInteractWith(npc->GetObjectGuid(), FriendVendorNpcFlags()))
         return false;
 
+    const bool aggressiveSell = command == FriendCommand::Shop || lastSituation.bagSpace >= 90;
     std::list<Item*> items = qualifier == "friend" ?
-        FriendSellItems(ai) : ai->InventoryParseItems(qualifier, IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
+        FriendSellItems(ai, aggressiveSell) : ai->InventoryParseItems(qualifier, IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
     if (items.empty())
         return false;
 
@@ -4922,7 +4931,10 @@ bool FriendBotController::ExecuteCurrentTask(const FriendSituation& situation)
                     "I'm going to look around a bit.",
                     "I'll scout around nearby."
                 }, mode == FriendMode::Solo ? 45 : 20, 90);
-                executionNextActionAt = now + urand(4, 10);
+                executionTask = FriendTaskType::HangOut;
+                executionTaskUntil = now + urand(5, 14);
+                executionNextActionAt = now + urand(2, 5);
+                AddIntentFailurePenalty(FriendIntent::Explore, mode == FriendMode::Solo ? 180 : 140);
                 return true;
             }
             break;
@@ -5599,6 +5611,7 @@ void FriendBotController::MaybeSayStatus(const FriendSituation& situation)
             out << " [loot]";
         if (NeedsTownChores(situation))
             out << " [chores sell=" << (situation.shouldSell ? "y" : "n")
+                << "(" << situation.sellableItems << ")"
                 << " repair=" << (situation.shouldRepair ? "y" : "n")
                 << " buy=" << (situation.shouldBuy ? "y" : "n")
                 << " train=" << (situation.shouldTrain ? "y" : "n")

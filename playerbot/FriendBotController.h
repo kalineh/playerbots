@@ -116,6 +116,7 @@ namespace ai
         bool nearbyVendor = false;
         bool nearbyRepair = false;
         bool shouldSell = false;
+        uint32 sellableItems = 0;
         bool shouldRepair = false;
         bool shouldBuy = false;
         bool lowFood = false;
