@@ -26,7 +26,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v13";
+    const char* FRIEND_BOT_VERSION = "v14";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -268,11 +268,11 @@ namespace
     void ReportServiceTransaction(PlayerbotAI* ai, const std::string& action, Creature* npc,
         uint32 moneyBefore, uint32 moneyAfter, uint32 itemsBefore, uint32 itemsAfter)
     {
-        if (!ai || !ai->GetMaster() || moneyBefore == moneyAfter)
+        if (!ai || !ai->GetMaster())
             return;
 
         std::ostringstream out;
-        if (action == "sell" && moneyAfter > moneyBefore)
+        if (action == "sell" && (moneyAfter > moneyBefore || itemsBefore > itemsAfter))
         {
             out << "Sold";
             if (itemsBefore > itemsAfter)
@@ -280,9 +280,10 @@ namespace
             else
                 out << " items";
 
-            out << " for " << ChatHelper::formatMoney(moneyAfter - moneyBefore);
+            if (moneyAfter > moneyBefore)
+                out << " for " << ChatHelper::formatMoney(moneyAfter - moneyBefore);
         }
-        else if (action == "buy" && moneyBefore > moneyAfter)
+        else if (action == "buy" && (moneyBefore > moneyAfter || itemsAfter > itemsBefore))
         {
             out << "Bought";
             if (itemsAfter > itemsBefore)
@@ -290,7 +291,8 @@ namespace
             else
                 out << " supplies";
 
-            out << " for " << ChatHelper::formatMoney(moneyBefore - moneyAfter);
+            if (moneyBefore > moneyAfter)
+                out << " for " << ChatHelper::formatMoney(moneyBefore - moneyAfter);
         }
         else if (action == "repair" && moneyBefore > moneyAfter)
         {
