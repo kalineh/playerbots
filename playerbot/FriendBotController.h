@@ -33,10 +33,10 @@ namespace ai
         Solo
     };
 
-    enum class FriendIdleGoal : uint8
+    enum class FriendTaskType : uint8
     {
         None,
-        Loiter,
+        HangOut,
         OrbitLeader,
         Resupply,
         GatherNearby,
@@ -56,7 +56,8 @@ namespace ai
     {
         Silent,
         Intent,
-        Debug
+        Debug,
+        Weights
     };
 
     enum class FriendIntent : uint8
@@ -70,10 +71,13 @@ namespace ai
         SaveSelf,
         SavePartyMember,
         BuffOrCureParty,
-        Adventure,
         CrowdControl,
         PullWithParty,
         LootNearby,
+        Gather,
+        Grind,
+        Explore,
+        HangOut,
         DealDamage
     };
 
@@ -264,12 +268,11 @@ namespace ai
         uint8 EquippedBagSlots() const;
         void MaybeProposeTownChores(const FriendSituation& situation);
         void ClearProposal();
-        bool ExecuteIdleGoal(const FriendSituation& situation);
-        bool ExecuteAdventureActivity(const FriendSituation& situation);
-        bool IsSafeForIdleActivity(const FriendSituation& situation) const;
-        FriendIdleGoal SelectIdleGoal(const FriendSituation& situation);
-        bool ExecuteCurrentIdleGoal(const FriendSituation& situation);
-        bool ExecuteIdleTravelGoal(const FriendSituation& situation, uint32 purpose, FriendIdleGoal workGoal,
+        bool ExecuteTaskIntent(FriendIntent intent, const FriendSituation& situation);
+        bool IsSafeForTaskActivity(const FriendSituation& situation) const;
+        FriendTaskType SelectTaskForIntent(FriendIntent intent, const FriendSituation& situation);
+        bool ExecuteCurrentTask(const FriendSituation& situation);
+        bool ExecuteTaskTravelGoal(const FriendSituation& situation, uint32 purpose, FriendTaskType workTask,
             const std::string& action, std::initializer_list<const char*> lines);
         uint32 SelectGatherTravelPurpose() const;
         bool HasGatherSkill() const;
@@ -290,7 +293,7 @@ namespace ai
         void MaybeSayActivity(const FriendSituation& situation, const std::string& key,
             std::initializer_list<const char*> lines, uint32 chancePercent = 100, uint32 cooldownSeconds = 30);
         void ResetTemporaryCommandIfSatisfied(const FriendSituation& situation);
-        void ClearIdleState();
+        void ClearExecutionState();
         bool PrintInventory(Player* requester, const std::string& filter);
         bool PrintEquipment(Player* requester, const std::string& slotName);
         void PrintHelp(Player* requester) const;
@@ -305,7 +308,7 @@ namespace ai
 
         static std::string CommandName(FriendCommand value);
         static std::string ModeName(FriendMode value);
-        static std::string IdleGoalName(FriendIdleGoal value);
+        static std::string TaskName(FriendTaskType value);
         static std::string ProposalName(FriendProposal value);
         static std::string VerbosityName(FriendVerbosity value);
         static std::string IntentName(FriendIntent value);
@@ -327,17 +330,17 @@ namespace ai
         uint8 lastMana = 100;
         uint8 lastLowestPartyHealth = 100;
         std::string lastStatusLine;
+        mutable std::string lastWeightsLine;
         std::string lastTargetReason;
         time_t manualAttackUntil = 0;
         time_t manualHealUntil = 0;
         time_t manualBuffUntil = 0;
         ObjectGuid manualHealGuid;
-        FriendIdleGoal idleGoal = FriendIdleGoal::None;
-        time_t idleGoalUntil = 0;
-        time_t idleNextActionAt = 0;
-        bool resupplyTravelRequested = false;
-        bool idleTravelRequested = false;
-        uint32 idleTravelPurpose = 0;
+        FriendTaskType executionTask = FriendTaskType::None;
+        time_t executionTaskUntil = 0;
+        time_t executionNextActionAt = 0;
+        bool taskTravelRequested = false;
+        uint32 taskTravelPurpose = 0;
         time_t proposalExpiresAt = 0;
         time_t nextProposalAt = 0;
         time_t nextSoftLevelCatchupAt = 0;
