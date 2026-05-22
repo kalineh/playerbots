@@ -29,7 +29,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v34";
+    const char* FRIEND_BOT_VERSION = "v35";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -3355,7 +3355,8 @@ bool FriendBotController::TryCastAbility(const FriendAbility& ability, Unit* tar
         ai->HasAnyAuraOf(bot, "cat form", "bear form", "dire bear form", "travel form", "aquatic form",
             "flight form", "swift flight form", "moonkin form", "tree of life", NULL))
     {
-        return TryAction("caster form", source) == FriendExecutionResult::Done;
+        if (TryAction("caster form", source) != FriendExecutionResult::Done)
+            return false;
     }
 
     if (IsHostileTarget(ai, target) && ability.Has(FRIEND_ABILITY_MELEE))
@@ -6903,7 +6904,7 @@ std::string FriendBotController::IntentName(FriendIntent value)
         case FriendIntent::RecoverResources: return "recover";
         case FriendIntent::Resupply: return "resupply";
         case FriendIntent::SaveSelf: return "save self";
-        case FriendIntent::SavePartyMember: return "save party";
+        case FriendIntent::SavePartyMember: return "heal";
         case FriendIntent::BuffOrCureParty: return "support";
         case FriendIntent::CrowdControl: return "cc";
         case FriendIntent::PullWithParty: return "pull";
