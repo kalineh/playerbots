@@ -62,7 +62,7 @@ Normal bots continue using the existing engine unchanged.
 Friend mode should be built as a small stateful controller with these layers:
 
 ```text
-Command / Assignment
+Mode / Command
   -> Adventure Goal / Party Participation
   -> Situation Snapshot
   -> Positioning Plan
@@ -73,34 +73,40 @@ Command / Assignment
 
 Each layer should produce simple, inspectable outputs for debugging.
 
-## Command And Assignment Layer
+## Mode, Command, And Goal Layer
 
-Friend bots need commandable high-level policy, not only tactical action choices.
+Friend bots separate long-lived social policy from temporary explicit commands and current idle/adventure goals.
 
-Initial assignments:
+Modes:
 
-- `ParticipateWithParty`: default mode; stay with the party and help actively.
-- `StayClose`: stricter party participation; no wandering, no optional pulls.
-- `ExploreNearby`: may split briefly, but returns on meaningful danger.
-- `ScoutOrPull`: intentionally separates to scout/pull under leash rules.
-- `ErrandTown`: sell, shop, repair, train, bank, or similar errands.
-- `Recover`: eat, drink, regroup, avoid optional fights.
-- `ReturnToParty`: navigate back to the main party/master.
-- `HoldPosition`: do not voluntarily move except for serious emergency.
+- `party`: default social mode; stay useful near the human leader while allowing light nearby activity.
+- `dungeon`: strict party mode; no optional wandering, pulling, or town chores.
+- `solo`: looser autonomy; may travel, grind, gather, or shop more independently.
 
-Suggested command behavior:
+Commands:
 
-- `friend`: enable friend mode and default to `ParticipateWithParty`.
-- `strict` or `act normal`: disable friend mode or clear friend overrides, depending on final command naming.
-- `come here`: force `ReturnToParty`.
-- `stay close`: force `StayClose`.
-- `dont move` / `hold`: force `HoldPosition`.
-- `recover`: force recovery behavior.
-- `explore`: allow `ExploreNearby` outside dungeons or when safe.
+- `friend`: enable friend mode and default to `party` mode with no temporary command.
+- `normal` / `reset`: clear temporary commands and return to party mode.
+- `come` / `come here`: temporarily return to the leader.
+- `stay close`: keep a tighter social leash.
+- `stop` / `hold` / `dont move`: hold position.
+- `rest`: recover health and mana.
+- `shop` / `town` / `resupply`: temporarily prioritize town chores, then clear back to the current mode.
+- `attack`, `heal`, `buff`: short tactical pushes without changing mode.
 
-Commands should set policy. Tactical behavior should obey that policy.
+Goals are the current non-urgent activity, such as `resupply`, `loot`, `recover`, `orbit`, `loiter`, `gather`, or `grind`. Commands can force or heavily weight a goal, but goals should clear naturally when complete.
 
 The human party leader/master should usually be the strongest social anchor. Friend bots can still care about the tank, healer, and party cluster, but when in doubt they should prefer staying useful to the human leader over optimizing around an inferred role layout.
+
+Town chores should stay friend-owned at the decision level. Reuse direct old actions like `repair`, `sell`, `buy`, and travel target movement where useful, but do not enable the broad old RPG/vendor/maintenance strategy stack as a friend-mode fallback.
+
+First-pass town chores:
+
+- repair gear when a repair NPC is nearby;
+- sell vendor/trash items when a vendor is nearby;
+- buy useful vendor supplies such as food, water, ammo, and reagents;
+- use travel targets for vendor/repair only when explicitly commanded with `shop`/`town`/`resupply` or when solo mode is allowed to act independently;
+- loosen the party leash in capital/town areas, but keep dungeon mode strict.
 
 ## Party Participation
 
@@ -109,14 +115,14 @@ Being in a party does not always mean every bot should immediately abandon its c
 Friend mode should compare:
 
 ```text
-current_assignment_value
+current_goal_value
 vs
 party_help_value - travel_cost - abandonment_cost
 ```
 
 Examples:
 
-- A bot on `ErrandTown` should ignore routine party grinding.
+- A bot on a `resupply` town goal should ignore routine party grinding.
 - The same bot should return if the master, tank, or healer is in serious danger and return is realistic.
 - A bot exploring nearby should finish or escape a local 1v1 before trying to help distant party combat.
 - In dungeons, the threshold to rejoin/help should be much lower and most splitting should be disallowed.
@@ -130,11 +136,11 @@ Useful inputs:
 - party leader/master danger;
 - likely tank/healer danger when inferable;
 - local danger around the bot;
-- current assignment interruptibility;
+- current command/goal interruptibility;
 - time already spent away;
 - dungeon/world/battleground context.
 
-Use stickiness: assignments should not flip every few seconds because the party tagged another mob.
+Use stickiness: goals should not flip every few seconds because the party tagged another mob.
 
 ## Situation Snapshot
 
@@ -144,7 +150,7 @@ Suggested fields:
 
 - bot health, mana, cooldown posture, movement state;
 - recent bot health/mana deltas;
-- current assignment and command override;
+- current mode, command, and goal;
 - local attackers and attackers targeting the bot;
 - main party cluster and local cluster;
 - party lowest HP and number of damaged members;
@@ -177,7 +183,7 @@ Suggested posture states:
 The positioning plan should evaluate:
 
 - anchor: master, tank, party center, current target, assigned hold point;
-- leader weighting: prefer the human leader/master as the default anchor unless assignment or immediate danger says otherwise;
+- leader weighting: prefer the human leader/master as the default anchor unless command, goal, or immediate danger says otherwise;
 - preferred range band;
 - maximum leash distance;
 - whether the bot is ahead of the tank/master;
@@ -223,7 +229,7 @@ Initial intents:
 
 Intent ranking should account for:
 
-- assignment and command override;
+- mode, command, and goal;
 - fight pressure;
 - party health and role needs;
 - local threat;
@@ -306,7 +312,7 @@ Should I try to make this possible?
 Should I move first?
 Should I wait?
 Is this unsafe in this context?
-Is this compatible with my current assignment and posture?
+Is this compatible with my current mode, command, goal, and posture?
 ```
 
 Some existing actions may need friend-specific wrappers or replacements where they silently fail, move poorly, or hide important reasons from the controller.
@@ -334,7 +340,7 @@ These results should feed diagnostics and short-term decision memory.
 
 ## Resource Model
 
-Resource use should depend on fight pressure and assignment.
+Resource use should depend on fight pressure, mode, command, and goal.
 
 Suggested resource modes:
 
@@ -350,7 +356,7 @@ Examples:
 - High pressure: burn mana and use strong abilities.
 - Critical pressure: potions, healthstones, cooldowns, emergency heals.
 
-Do not make mana-saving a static class rule. Tie it to party pressure and current assignment.
+Do not make mana-saving a static class rule. Tie it to party pressure and current mode/goal.
 
 Pressure should include trends, not just current values. A tank at 70% HP and falling fast is very different from a tank at 70% HP and stable. Track recent HP/resource deltas and use them to softly project near-future danger.
 
@@ -438,7 +444,7 @@ Friend mode needs built-in reporting from the start.
 
 `friend ?` should report:
 
-- current assignment;
+- current mode/command/goal;
 - party participation decision;
 - fight pressure;
 - posture and desired anchor/range;
@@ -461,7 +467,7 @@ Approach: implement the all-class baseline before detailed class flavor. Every c
 
 Risk: bots may never finish errands, or may ignore the party too long while away.
 
-Approach: every assignment needs start conditions, completion conditions, failure conditions, max duration, interrupt threshold, and return behavior.
+Approach: every command/goal needs start conditions, completion conditions, failure conditions, max duration, interrupt threshold, and return behavior.
 
 ### Split Party Confusion
 
@@ -519,12 +525,12 @@ Approach: let pressure rise from HP deltas, long target lifetime, elite status, 
 
 - Build `FriendSituation`.
 - Add basic `friend ?` reporting.
-- Include assignment, party pressure, HP/resource deltas, local danger, resources, posture, and last action result.
+- Include mode, command, goal, party pressure, HP/resource deltas, local danger, resources, posture, and last action result.
 
 ### Phase 3: Positioning
 
 - Add `FriendPositioning`.
-- Implement `StayClose`, `ReturnToParty`, `HoldPosition`, and ranged/close-support posture.
+- Implement `stay close`, `come`, `hold`, and ranged/close-support posture.
 - Use existing movement actions where acceptable.
 - Add friend-specific movement helpers only where existing actions hide too much or cause bad movement.
 
@@ -551,7 +557,7 @@ Approach: let pressure rise from HP deltas, long target lifetime, elite status, 
 
 ### Phase 6: Assignments And Splitting
 
-- Add `ExploreNearby`, `ScoutOrPull`, and `ErrandTown`.
+- Add richer explore, scout/pull, and town errand goals.
 - Add party participation scoring and interruption thresholds.
 - Add dungeon restrictions and leash rules.
 
@@ -569,7 +575,7 @@ Friend mode should be a readable controller with explicit state and explicit rea
 When behavior is wrong, we should be able to ask:
 
 ```text
-What assignment is active?
+What mode, command, and goal are active?
 What did the bot think the party state was?
 Where did it want to stand?
 What intent won?

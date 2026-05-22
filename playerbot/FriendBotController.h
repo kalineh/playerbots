@@ -14,13 +14,14 @@ namespace ai
 {
     class Action;
 
-    enum class FriendAssignment : uint8
+    enum class FriendCommand : uint8
     {
-        ParticipateWithParty,
+        None,
         StayClose,
         ReturnToParty,
         HoldPosition,
-        Recover
+        Recover,
+        Shop
     };
 
     enum class FriendMode : uint8
@@ -35,6 +36,7 @@ namespace ai
         None,
         Loiter,
         OrbitLeader,
+        Resupply,
         GatherNearby,
         GrindNearby
     };
@@ -53,6 +55,7 @@ namespace ai
         HoldPosition,
         ImprovePosition,
         RecoverResources,
+        Resupply,
         SaveSelf,
         SavePartyMember,
         BuffOrCureParty,
@@ -93,6 +96,18 @@ namespace ai
         bool partyInCombat = false;
         bool leaderSafe = false;
         bool leaderInCombat = false;
+        bool inTown = false;
+        bool nearbyVendor = false;
+        bool nearbyRepair = false;
+        bool shouldSell = false;
+        bool shouldRepair = false;
+        bool shouldBuy = false;
+        bool lowFood = false;
+        bool lowWater = false;
+        bool lowAmmo = false;
+        bool travelTargetActive = false;
+        bool travelTargetPreparing = false;
+        bool travelTargetTraveling = false;
         bool healerish = false;
         bool tankish = false;
         bool ranged = false;
@@ -101,6 +116,8 @@ namespace ai
         bool healerPartyHasThreat = false;
         uint8 botHealth = 100;
         uint8 botMana = 100;
+        uint8 bagSpace = 0;
+        uint8 durability = 100;
         int32 botHealthDelta = 0;
         int32 botManaDelta = 0;
         uint8 lowestPartyHealth = 100;
@@ -138,7 +155,7 @@ namespace ai
         void Report(Player* requester) const;
         std::string FormatReport() const;
 
-        FriendAssignment GetAssignment() const { return assignment; }
+        FriendCommand GetCommand() const { return command; }
         FriendVerbosity GetVerbosity() const { return verbosity; }
 
     private:
@@ -147,6 +164,7 @@ namespace ai
         bool ExecuteIntent(FriendIntent intent, const FriendSituation& situation);
         bool TryActions(const std::vector<std::string>& names, const std::string& source);
         FriendExecutionResult TryAction(const std::string& name, const std::string& source, uint8 depth = 0);
+        FriendExecutionResult TryActionWithParam(const std::string& name, const std::string& param, const std::string& source);
         bool TryPrerequisites(Action* action, const std::string& source, uint8 depth);
         bool TryCatalogDamage(const FriendSituation& situation, const std::string& source);
         bool TryCatalogHeal(const FriendSituation& situation, const std::string& source);
@@ -178,6 +196,10 @@ namespace ai
         std::vector<Unit*> GetPartyTargets() const;
         bool ExecuteLoot(const FriendSituation& situation, bool allowObjects = false);
         bool MoveToRecoverPosition(const FriendSituation& situation);
+        bool ExecuteResupply(const FriendSituation& situation);
+        bool TryTravelForResupply(const FriendSituation& situation);
+        bool IsSafeForTownChores(const FriendSituation& situation) const;
+        bool NeedsTownChores(const FriendSituation& situation) const;
         bool ExecuteIdleGoal(const FriendSituation& situation);
         bool IsSafeForIdleActivity(const FriendSituation& situation) const;
         FriendIdleGoal SelectIdleGoal(const FriendSituation& situation);
@@ -192,7 +214,8 @@ namespace ai
         void ClearFriendMovement(bool includePointMove);
         void SetResult(FriendIntent intent, const std::string& action, FriendExecutionResult result);
         void MaybeSayStatus(const FriendSituation& situation);
-        void ResetTemporaryAssignmentIfSatisfied(const FriendSituation& situation);
+        void ResetTemporaryCommandIfSatisfied(const FriendSituation& situation);
+        void ClearIdleState();
 
         std::vector<std::string> PositionActions(const FriendSituation& situation) const;
         std::vector<std::string> SelfPreservationActions(const FriendSituation& situation) const;
@@ -202,7 +225,7 @@ namespace ai
         std::vector<std::string> PullActions(const FriendSituation& situation) const;
         std::vector<std::string> DamageActions(const FriendSituation& situation) const;
 
-        static std::string AssignmentName(FriendAssignment value);
+        static std::string CommandName(FriendCommand value);
         static std::string ModeName(FriendMode value);
         static std::string IdleGoalName(FriendIdleGoal value);
         static std::string VerbosityName(FriendVerbosity value);
@@ -214,7 +237,7 @@ namespace ai
     private:
         PlayerbotAI* ai;
         FriendMode mode = FriendMode::Party;
-        FriendAssignment assignment = FriendAssignment::ParticipateWithParty;
+        FriendCommand command = FriendCommand::None;
         FriendVerbosity verbosity = FriendVerbosity::Silent;
         FriendIntent lastIntent = FriendIntent::FollowOrIdle;
         FriendExecutionResult lastResult = FriendExecutionResult::None;
@@ -232,6 +255,7 @@ namespace ai
         FriendIdleGoal idleGoal = FriendIdleGoal::None;
         time_t idleGoalUntil = 0;
         time_t idleNextActionAt = 0;
+        bool resupplyTravelRequested = false;
         FriendAbilityCatalog abilityCatalog;
     };
 }

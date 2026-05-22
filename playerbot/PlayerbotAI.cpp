@@ -91,6 +91,7 @@ namespace
             command == "normal" || command == "reset" || command == "act normal" ||
             command == "stay close" || command == "close" ||
             command == "recover" || command == "drink" || command == "rest" || command == "rest up" ||
+            command == "shop" || command == "town" || command == "resupply" || command == "vendor" ||
             command == "attack" || command == "heal" || command == "heal me" || command == "buff" || command == "buff me" ||
             command == "summon" || command == "report" ||
             command == "verbose" || command == "intent" ||
