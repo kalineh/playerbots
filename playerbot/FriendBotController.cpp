@@ -27,7 +27,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v28";
+    const char* FRIEND_BOT_VERSION = "v29";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -53,6 +53,7 @@ namespace
     const uint32 FRIEND_SOFT_TRAINING_COOLDOWN = 3 * MINUTE;
     const uint32 FRIEND_SOFT_BAG_UPGRADE_COOLDOWN = 5 * MINUTE;
     const uint32 FRIEND_SOFT_GEAR_UPGRADE_COOLDOWN = 10 * MINUTE;
+    const uint32 FRIEND_EQUIP_UPGRADE_CHECK_COOLDOWN = 2 * MINUTE;
     const uint32 FRIEND_PROPOSAL_COOLDOWN = 5 * MINUTE;
     const uint32 FRIEND_PROPOSAL_REJECT_COOLDOWN = 10 * MINUTE;
     const uint32 FRIEND_RESUPPLY_RETRY_COOLDOWN = 0;
@@ -612,6 +613,7 @@ void FriendBotController::Reset()
     nextSoftTrainingAt = 0;
     nextSoftBagUpgradeAt = 0;
     nextSoftGearUpgradeAt = 0;
+    nextEquipUpgradeAt = 0;
     nextResupplyAttemptAt = 0;
     lastPlanningBusyAt = time(nullptr);
     lastActivityBark.clear();
@@ -654,6 +656,13 @@ void FriendBotController::RunTick(bool minimal)
     FriendSituation situation = BuildSituation();
     lastSituation = situation;
     ResetTemporaryCommandIfSatisfied(situation);
+
+    if (TryEquipUpgrades(situation))
+    {
+        MaybeSayStatus(situation);
+        MaybeProposeTownChores(situation);
+        return;
+    }
 
     FriendIntent intent = SelectIntent(situation);
     lastTargetReason.clear();
@@ -1319,10 +1328,12 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
     const bool soloFree = mode == FriendMode::Solo && command == FriendCommand::None;
     const bool partyNearby = !soloFree || !situation.leaderSafe || situation.leaderDistance <= SoftLeashDistance(situation);
     const bool localPartyInCombat = situation.partyInCombat && partyNearby;
+    const bool activeTask = executionTask != FriendTaskType::None && executionTaskUntil > now;
+    const bool activeResupplyTask = activeTask && IntentForTask(executionTask) == FriendIntent::Resupply;
 
     float softLeash = SoftLeashDistance(situation);
     float hardLeash = HardLeashDistance(situation);
-    if (!soloFree && situation.leaderSafe && situation.leaderDistance > hardLeash &&
+    if (!activeResupplyTask && !soloFree && situation.leaderSafe && situation.leaderDistance > hardLeash &&
         (!situation.inCombat || mode == FriendMode::Dungeon || !situation.hasAttackers))
         return FriendIntent::ReturnToParty;
 
@@ -1384,6 +1395,9 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
 
     if (ShouldLootNow(situation, localPartyInCombat))
         return FriendIntent::LootNearby;
+
+    if (activeTask && !situation.inCombat && !localPartyInCombat)
+        return IntentForTask(executionTask);
 
     const bool serviceTravelTarget = IsServiceTravelPurpose(taskTravelPurpose) ||
         IsServiceTravelPurpose(situation.travelTargetPurpose);
@@ -1454,7 +1468,6 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
             situation.lowestPartyHealth >= FRIEND_HEAL_TOP_OFF_HEALTH;
         const bool urgentTownChores = command == FriendCommand::Shop ||
             situation.shouldRepair || situation.shouldSell || situation.shouldBuy;
-        const bool activeTask = executionTask != FriendTaskType::None && executionTaskUntil > now;
         const bool safePullOpportunity = command == FriendCommand::None &&
             mode != FriendMode::Dungeon &&
             situation.leaderSafe &&
@@ -3816,6 +3829,9 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
 
     if (situation.nearbyVendor)
     {
+        if (situation.shouldSell && TryEquipUpgrades(situation, true))
+            return true;
+
         if (situation.shouldSell)
         {
             if (TryServiceAction("sell", "friend", FriendVendorNpcFlags()) == FriendExecutionResult::Done)
@@ -4433,6 +4449,34 @@ bool FriendBotController::TrySoftTownProgression(const FriendSituation& situatio
         return true;
 
     return TrySoftGearUpgrade(situation);
+}
+
+bool FriendBotController::TryEquipUpgrades(const FriendSituation& situation, bool force)
+{
+    if (!ai || !ai->GetBot())
+        return false;
+
+    Player* bot = ai->GetBot();
+    const time_t now = time(nullptr);
+    if (!force && now < nextEquipUpgradeAt)
+        return false;
+
+    if (situation.inCombat || situation.partyInCombat || situation.hasAttackers ||
+        bot->GetTrader() || bot->IsBeingTeleported() || bot->IsTaxiFlying())
+        return false;
+
+    nextEquipUpgradeAt = now + FRIEND_EQUIP_UPGRADE_CHECK_COOLDOWN;
+    const uint32 scoreBefore = ai->GetEquipGearScore(bot, false, false);
+    const bool equipped = ai->DoSpecificAction("equip upgrades", Event("friend equip", "", ai->GetMaster()), true);
+    const uint32 scoreAfter = ai->GetEquipGearScore(bot, false, false);
+    if (!equipped && scoreAfter <= scoreBefore)
+        return false;
+
+    abilityCatalog.Reset();
+    ClearFriendInventoryValues(ai);
+    SetResult(FriendIntent::Resupply, "equip upgrades", FriendExecutionResult::Done);
+    ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+    return true;
 }
 
 bool FriendBotController::TrySoftLevelCatchup(const FriendSituation& situation)

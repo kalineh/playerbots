@@ -262,6 +262,7 @@ namespace ai
         bool NeedsTownChores(const FriendSituation& situation) const;
         bool WantsTownProgression(const FriendSituation& situation) const;
         bool TrySoftTownProgression(const FriendSituation& situation);
+        bool TryEquipUpgrades(const FriendSituation& situation, bool force = false);
         bool TrySoftLevelCatchup(const FriendSituation& situation);
         bool TrySoftTraining(const FriendSituation& situation);
         bool TrySoftBagUpgrade(const FriendSituation& situation);
@@ -364,6 +365,7 @@ namespace ai
         time_t nextSoftTrainingAt = 0;
         time_t nextSoftBagUpgradeAt = 0;
         time_t nextSoftGearUpgradeAt = 0;
+        time_t nextEquipUpgradeAt = 0;
         time_t nextResupplyAttemptAt = 0;
         time_t lastPlanningBusyAt = 0;
         std::string lastActivityBark;
