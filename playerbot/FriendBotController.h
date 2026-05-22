@@ -181,6 +181,9 @@ namespace ai
         bool TryFreeDamage(const FriendSituation& situation, const std::string& source);
         bool TryFallbackCombat(const FriendSituation& situation, const std::string& source);
         bool TryDruidCombatForm(const FriendSituation& situation, const std::string& source);
+        bool TryImproveRangedCombatSpacing(const FriendSituation& situation, const std::string& action);
+        bool FindRangedCombatPosition(Unit* target, const FriendSituation& situation, float& x, float& y, float& z) const;
+        bool IsRangedCombatPositionSafe(Unit* target, const FriendSituation& situation, float x, float y, float z) const;
         bool MoveToDamageTarget(const FriendSituation& situation, const std::string& action);
         bool MoveToUnitRange(Unit* target, float desiredDistance, const std::string& action);
         bool PrefersMeleeDamage(const FriendSituation& situation) const;

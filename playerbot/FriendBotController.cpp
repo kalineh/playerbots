@@ -37,6 +37,11 @@ namespace
     const uint8 FRIEND_RTI_MOON = 4;
     const uint8 FRIEND_RTI_SKULL = 7;
     const float FRIEND_CC_MELEE_ENGAGED_DISTANCE = 5.0f;
+    const float FRIEND_RANGED_SPACING_MIN = 7.0f;
+    const float FRIEND_RANGED_SPACING_WORLD = 13.0f;
+    const float FRIEND_RANGED_SPACING_DUNGEON = 10.0f;
+    const float FRIEND_RANGED_SPACING_HOSTILE_BUFFER = 14.0f;
+    const float FRIEND_RANGED_SPACING_PARTY_BUFFER = 3.0f;
 
     void AddActions(std::vector<std::string>& actions, std::initializer_list<const char*> names)
     {
@@ -800,6 +805,8 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
                 command == FriendCommand::ReturnToParty);
 
         case FriendIntent::ImprovePosition:
+            if (TryImproveRangedCombatSpacing(situation, "ranged spacing"))
+                return true;
             if (TryActions(PositionActions(situation), "friend position"))
                 return true;
             if (situation.leaderSafe && situation.leaderDistance > SoftLeashDistance(situation))
@@ -926,6 +933,8 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
             return ExecuteLoot(situation);
 
         case FriendIntent::DealDamage:
+            if (TryImproveRangedCombatSpacing(situation, "ranged spacing"))
+                return true;
             if (GetCombatStyle(situation) == FriendCombatStyle::Dry && TryFreeDamage(situation, "friend free damage"))
                 return true;
             if (TryCatalogDamage(situation, "friend damage"))
@@ -1539,6 +1548,164 @@ bool FriendBotController::TryDruidCombatForm(const FriendSituation& situation, c
     if (TryAction("dire bear form", source) == FriendExecutionResult::Done)
         return true;
     return TryAction("bear form", source) == FriendExecutionResult::Done;
+}
+
+bool FriendBotController::TryImproveRangedCombatSpacing(const FriendSituation& situation, const std::string& action)
+{
+    if (!ai || !ai->GetBot() || !ai->GetAiObjectContext() || !ai->CanMove())
+        return false;
+
+    Player* bot = ai->GetBot();
+    if (!bot->GetMotionMaster() || bot->IsNonMeleeSpellCasted(true))
+        return false;
+
+    if ((!situation.ranged && !situation.healerish) || situation.tankish ||
+        situation.hasAttackers || situation.botHasThreat || situation.attackersTargetingMeCount > 0)
+        return false;
+
+    Unit* target = GetDamageTarget(situation, true);
+    if (!IsHostileTarget(ai, target) || target->GetVictim() == bot)
+        return false;
+
+    const float distance = sServerFacade.GetDistance2d(bot, target);
+    if (distance >= FRIEND_RANGED_SPACING_MIN && bot->IsWithinLOSInMap(target, true))
+        return false;
+
+    if (IsMovingForAction(ai, lastAction, action))
+    {
+        SetResult(lastIntent, action, FriendExecutionResult::Done);
+        ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
+        return true;
+    }
+
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    if (!FindRangedCombatPosition(target, situation, x, y, z))
+        return false;
+
+    bot->GetMotionMaster()->MovePoint(target->GetMapId(), x, y, z, FORCED_MOVEMENT_RUN, true);
+    SetResult(lastIntent, action, FriendExecutionResult::Done);
+    ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
+    return true;
+}
+
+bool FriendBotController::FindRangedCombatPosition(Unit* target, const FriendSituation& situation, float& x, float& y, float& z) const
+{
+    if (!ai || !ai->GetBot() || !target)
+        return false;
+
+    Player* bot = ai->GetBot();
+    const float desiredDistance = situation.inDungeon ? FRIEND_RANGED_SPACING_DUNGEON : FRIEND_RANGED_SPACING_WORLD;
+
+    float dx = bot->GetPositionX() - target->GetPositionX();
+    float dy = bot->GetPositionY() - target->GetPositionY();
+
+    Unit* nearestHostile = ai->GetUnit(situation.nearestHostileGuid);
+    if (nearestHostile && nearestHostile != target && IsHostileTarget(ai, nearestHostile))
+    {
+        dx += (target->GetPositionX() - nearestHostile->GetPositionX()) * 1.5f;
+        dy += (target->GetPositionY() - nearestHostile->GetPositionY()) * 1.5f;
+    }
+
+    float length = std::sqrt(dx * dx + dy * dy);
+    if (length < 0.1f)
+    {
+        const float angle = target->GetAngle(bot);
+        dx = std::cos(angle);
+        dy = std::sin(angle);
+    }
+    else
+    {
+        dx /= length;
+        dy /= length;
+    }
+
+    const float baseAngle = std::atan2(dy, dx);
+    const float randomOffset = static_cast<float>(urand(0, 600)) / 1000.0f - 0.3f;
+    const float offsets[] = { 0.0f, 0.45f, -0.45f, 0.9f, -0.9f, 1.35f, -1.35f };
+    const float radii[] = { desiredDistance, desiredDistance + 2.0f, std::max(FRIEND_RANGED_SPACING_MIN, desiredDistance - 2.0f) };
+
+    for (float radius : radii)
+    {
+        for (float offset : offsets)
+        {
+            const float angle = baseAngle + offset + randomOffset;
+            x = target->GetPositionX() + std::cos(angle) * radius;
+            y = target->GetPositionY() + std::sin(angle) * radius;
+            z = target->GetPositionZ();
+            target->UpdateGroundPositionZ(x, y, z);
+
+            if (IsRangedCombatPositionSafe(target, situation, x, y, z))
+                return true;
+        }
+    }
+
+    return false;
+}
+
+bool FriendBotController::IsRangedCombatPositionSafe(Unit* target, const FriendSituation& situation, float x, float y, float z) const
+{
+    if (!ai || !ai->GetBot() || !ai->GetAiObjectContext() || !target)
+        return false;
+
+    Player* bot = ai->GetBot();
+    WorldPosition from(bot);
+    WorldPosition to(target->GetMapId(), x, y, z);
+    if (!from.canPathTo(to, bot) ||
+        !bot->IsWithinLOS(x, y, z + bot->GetCollisionHeight(), true) ||
+        !target->IsWithinLOS(x, y, z + bot->GetCollisionHeight(), true))
+        return false;
+
+    if (situation.leaderSafe && (mode != FriendMode::Solo || situation.leaderDistance <= SoftLeashDistance(situation)))
+    {
+        Unit* leader = ai->GetUnit(situation.leaderGuid);
+        if (leader && leader->GetMapId() == target->GetMapId())
+        {
+            const float dx = leader->GetPositionX() - x;
+            const float dy = leader->GetPositionY() - y;
+            if (std::sqrt(dx * dx + dy * dy) > SoftLeashDistance(situation))
+                return false;
+        }
+    }
+
+    AiObjectContext* context = ai->GetAiObjectContext();
+    std::list<ObjectGuid> nearbyNpcs = context->GetValue<std::list<ObjectGuid> >("nearest npcs no los")->Get();
+    for (std::list<ObjectGuid>::const_iterator itr = nearbyNpcs.begin(); itr != nearbyNpcs.end(); ++itr)
+    {
+        Unit* hostile = ai->GetUnit(*itr);
+        if (!IsHostileTarget(ai, hostile) || hostile == target)
+            continue;
+
+        const float candidateDx = hostile->GetPositionX() - x;
+        const float candidateDy = hostile->GetPositionY() - y;
+        const float candidateDistance = std::sqrt(candidateDx * candidateDx + candidateDy * candidateDy);
+        if (candidateDistance < FRIEND_RANGED_SPACING_HOSTILE_BUFFER)
+            return false;
+
+        const float currentDistance = sServerFacade.GetDistance2d(bot, hostile);
+        if (currentDistance < sPlayerbotAIConfig.sightDistance &&
+            candidateDistance + 2.0f < currentDistance)
+            return false;
+    }
+
+    if (Group* group = bot->GetGroup())
+    {
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->getSource();
+            if (!member || member == bot || !member->IsAlive() || member->GetMapId() != target->GetMapId() ||
+                !ai->IsSafe(member))
+                continue;
+
+            const float dx = member->GetPositionX() - x;
+            const float dy = member->GetPositionY() - y;
+            if (std::sqrt(dx * dx + dy * dy) < FRIEND_RANGED_SPACING_PARTY_BUFFER)
+                return false;
+        }
+    }
+
+    return true;
 }
 
 bool FriendBotController::MoveToDamageTarget(const FriendSituation& situation, const std::string& action)
