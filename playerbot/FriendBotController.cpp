@@ -25,7 +25,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v8";
+    const char* FRIEND_BOT_VERSION = "v9";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -228,6 +228,22 @@ namespace
                 if (Item* item = bot->GetItemByPos(bag, slot))
                     count += item->GetCount();
             }
+        }
+
+        return count;
+    }
+
+    uint32 CountBagItemsByQualifier(PlayerbotAI* ai, const std::string& qualifier)
+    {
+        if (!ai)
+            return 0;
+
+        uint32 count = 0;
+        std::list<Item*> items = ai->InventoryParseItems(qualifier, IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
+        for (Item* item : items)
+        {
+            if (item)
+                count += item->GetCount();
         }
 
         return count;
@@ -826,13 +842,13 @@ FriendSituation FriendBotController::BuildSituation()
             }
         }
 
-        uint32 vendorItems = context->GetValue<uint32>("item count", "vendor")->Get();
-        uint32 trashItems = context->GetValue<uint32>("item count", "gray")->Get();
+        uint32 vendorItems = CountBagItemsByQualifier(ai, "vendor");
+        uint32 trashItems = CountBagItemsByQualifier(ai, "gray");
         uint32 minRepairCost = context->GetValue<uint32>("min repair cost")->Get();
         uint32 repairMoney = context->GetValue<uint32>("free money for", static_cast<uint32>(NeedMoneyFor::repair))->Get();
         situation.trainCost = context->GetValue<uint32>("train cost", TRAINER_TYPE_CLASS)->Get();
         situation.gearBudget = context->GetValue<uint32>("free money for", static_cast<uint32>(NeedMoneyFor::gear))->Get();
-        situation.shouldSell = situation.bagSpace > 80 || vendorItems > 0 || trashItems > 0;
+        situation.shouldSell = vendorItems > 0 || trashItems > 0;
         situation.shouldRepair = situation.durability < 95 && minRepairCost > 0 && minRepairCost <= repairMoney;
         situation.lowFood = context->GetValue<uint32>("item count", "food")->Get() < 5;
         situation.lowWater = bot->GetMaxPower(POWER_MANA) > 0 && context->GetValue<uint32>("item count", "water")->Get() < 5;
