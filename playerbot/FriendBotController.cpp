@@ -26,7 +26,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v17";
+    const char* FRIEND_BOT_VERSION = "v18";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -62,6 +62,8 @@ namespace
     const uint8 FRIEND_HEADING_MIN_CONFIDENCE = 35;
     const float FRIEND_IDLE_MOVE_HOSTILE_BUFFER = 12.0f;
     const int32 FRIEND_ABILITY_TOP_ROLL_WINDOW = 25;
+    const int32 FRIEND_INTENT_FAILURE_DECAY_PER_SECOND = 6;
+    const int32 FRIEND_INTENT_FAILURE_MAX_PENALTY = 240;
 
     uint32 FriendVendorNpcFlags()
     {
@@ -438,8 +440,7 @@ void FriendBotController::Reset()
     manualAttackUntil = 0;
     manualHealUntil = 0;
     manualBuffUntil = 0;
-    lastBlockedIntent = FriendIntent::FollowOrIdle;
-    lastBlockedIntentUntil = 0;
+    ClearIntentFailurePenalties();
     manualHealGuid = ObjectGuid();
     executionTask = FriendTaskType::None;
     executionTaskUntil = 0;
@@ -519,8 +520,7 @@ bool FriendBotController::HandleCommand(const std::string& rawCommand, Player* r
         manualAttackUntil = 0;
         manualHealUntil = 0;
         manualBuffUntil = 0;
-        lastBlockedIntent = FriendIntent::FollowOrIdle;
-        lastBlockedIntentUntil = 0;
+        ClearIntentFailurePenalties();
         manualHealGuid = ObjectGuid();
         executionTask = FriendTaskType::None;
         executionTaskUntil = 0;
@@ -832,9 +832,21 @@ std::string FriendBotController::FormatReport() const
     AppendTravelSummary(out, lastSituation);
     if (nextResupplyAttemptAt > time(nullptr))
         out << ", resupplyCd=" << static_cast<uint32>(nextResupplyAttemptAt - time(nullptr)) << "s";
-    if (lastBlockedIntentUntil > time(nullptr))
-        out << ", blocked=" << IntentName(lastBlockedIntent) << ":"
-            << static_cast<uint32>(lastBlockedIntentUntil - time(nullptr)) << "s";
+    const time_t now = time(nullptr);
+    FriendIntent penalizedIntent = FriendIntent::FollowOrIdle;
+    int32 topPenalty = 0;
+    for (uint8 i = 0; i < static_cast<uint8>(FriendIntent::Max); ++i)
+    {
+        FriendIntent intent = static_cast<FriendIntent>(i);
+        int32 penalty = IntentFailurePenalty(intent, now);
+        if (penalty > topPenalty)
+        {
+            topPenalty = penalty;
+            penalizedIntent = intent;
+        }
+    }
+    if (topPenalty > 0)
+        out << ", penalty=" << IntentName(penalizedIntent) << ":-" << topPenalty;
     if (lastSituation.nearestHostileGuid)
         out << ", nearHostile=" << static_cast<uint32>(lastSituation.nearestHostileDistance);
     out << ", abilities=" << static_cast<uint32>(abilityCatalog.GetAbilities().size());
@@ -1208,13 +1220,6 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
         (!partyNearby || situation.lowestPartyHealth >= FRIEND_HEAL_TOP_OFF_HEALTH);
     const bool resupplyAllowed = command == FriendCommand::Shop || now >= nextResupplyAttemptAt;
 
-    if (command == FriendCommand::None &&
-        mode != FriendMode::Dungeon && !situation.inCombat && !localPartyInCombat &&
-        situation.leaderSafe && situation.leaderDistance <= sPlayerbotAIConfig.reactDistance &&
-        situation.nearbyPartyMembers >= 2 && situation.possibleTargetsCount > 0 && situation.possibleTargetsCount <= 2 &&
-        situation.botHealth >= sPlayerbotAIConfig.mediumHealth && situation.botMana >= sPlayerbotAIConfig.mediumMana)
-        return FriendIntent::PullWithParty;
-
     if (relaxedOutOfCombat && IsSafeForTaskActivity(situation) &&
         (mode == FriendMode::Solo || mode == FriendMode::Party))
     {
@@ -1230,7 +1235,18 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
             if (score > 0)
             {
                 const bool explicitCommandIntent = command == FriendCommand::Shop && intent == FriendIntent::Resupply;
-                if (!explicitCommandIntent && lastBlockedIntentUntil > now && lastBlockedIntent == intent)
+                const int32 penalty = IntentFailurePenalty(intent, now);
+                if (penalty > 0)
+                {
+                    score -= explicitCommandIntent ? penalty / 4 : penalty;
+                    if (score <= 0)
+                        return;
+                }
+
+                if (intent == FriendIntent::PullWithParty && command == FriendCommand::None)
+                    score = std::max<int32>(1, score - IntentFailurePenalty(FriendIntent::Grind, now) / 2);
+
+                if (score <= 0)
                     return;
 
                 for (WeightedIntent& candidate : candidates)
@@ -1260,6 +1276,16 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
         const bool urgentTownChores = command == FriendCommand::Shop ||
             situation.shouldRepair || situation.shouldSell || situation.shouldBuy;
         const bool activeTask = executionTask != FriendTaskType::None && executionTaskUntil > now;
+        const bool safePullOpportunity = command == FriendCommand::None &&
+            mode != FriendMode::Dungeon &&
+            situation.leaderSafe &&
+            situation.leaderDistance <= sPlayerbotAIConfig.reactDistance &&
+            situation.nearbyPartyMembers >= 2 &&
+            situation.possibleTargetsCount > 0 &&
+            situation.possibleTargetsCount <= 2 &&
+            situation.botHealth >= sPlayerbotAIConfig.mediumHealth &&
+            situation.botMana >= sPlayerbotAIConfig.lowMana &&
+            !situation.damagedPartyMembers;
 
         if (activeTask)
             add(IntentForTask(executionTask), 80);
@@ -1283,6 +1309,10 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
                 add(FriendIntent::Grind, mode == FriendMode::Solo ?
                     115 + grindBias + boredom + forwardBias / 4 :
                     (partyComfortable ? 50 + grindBias + boredom + forwardBias / 6 : 0));
+
+            if (safePullOpportunity)
+                add(FriendIntent::PullWithParty, partyComfortable ?
+                    45 + grindBias / 2 + boredom / 2 + forwardBias / 8 : 20);
 
             if (!urgentTownChores && situation.botHealth >= FRIEND_HEAL_TOP_OFF_HEALTH &&
                 situation.botMana >= sPlayerbotAIConfig.lowMana)
@@ -1477,8 +1507,6 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
                 return true;
             if (situation.hasCreatureLoot && ExecuteLoot(situation))
                 return true;
-            if (TryActions(PullActions(situation), "friend pull"))
-                return true;
             if (situation.leaderSafe && situation.leaderDistance > PreferredLeaderDistance(situation))
                 return MoveNearLeader(situation, "move near leader", false);
             return false;
@@ -1503,7 +1531,21 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
                 }, 35, 45);
                 return true;
             }
-            return ExecuteTaskIntent(FriendIntent::Grind, situation);
+            if (GetDamageTarget(situation, true))
+            {
+                if (TryFreeDamage(situation, "friend pull"))
+                    return true;
+                if (TryCatalogDamage(situation, "friend pull"))
+                    return true;
+                if (PrefersMeleeDamage(situation) && MoveToDamageTarget(situation, "pull engage"))
+                    return true;
+                if (TryActions(DamageActions(situation), "friend pull fallback"))
+                    return true;
+            }
+            if (ExecuteTaskIntent(FriendIntent::Grind, situation))
+                return true;
+            AddIntentFailurePenalty(FriendIntent::PullWithParty, 80);
+            return false;
 
         case FriendIntent::LootNearby:
             if (ExecuteLoot(situation))
@@ -4353,6 +4395,52 @@ void FriendBotController::ClearProposal()
     proposalExpiresAt = 0;
 }
 
+int32 FriendBotController::IntentFailurePenalty(FriendIntent intent, time_t now) const
+{
+    const uint8 index = static_cast<uint8>(intent);
+    if (index >= static_cast<uint8>(FriendIntent::Max))
+        return 0;
+
+    const int32 penalty = intentFailurePenalty[index];
+    if (penalty <= 0)
+        return 0;
+
+    const time_t age = std::max<time_t>(0, now - intentFailurePenaltyAt[index]);
+    return std::max<int32>(0, penalty - static_cast<int32>(age) * FRIEND_INTENT_FAILURE_DECAY_PER_SECOND);
+}
+
+void FriendBotController::AddIntentFailurePenalty(FriendIntent intent, int32 amount)
+{
+    const uint8 index = static_cast<uint8>(intent);
+    if (index >= static_cast<uint8>(FriendIntent::Max) || amount <= 0)
+        return;
+
+    const time_t now = time(nullptr);
+    intentFailurePenalty[index] = std::min<int32>(
+        FRIEND_INTENT_FAILURE_MAX_PENALTY,
+        IntentFailurePenalty(intent, now) + amount);
+    intentFailurePenaltyAt[index] = now;
+}
+
+void FriendBotController::ClearIntentFailurePenalty(FriendIntent intent)
+{
+    const uint8 index = static_cast<uint8>(intent);
+    if (index >= static_cast<uint8>(FriendIntent::Max))
+        return;
+
+    intentFailurePenalty[index] = 0;
+    intentFailurePenaltyAt[index] = 0;
+}
+
+void FriendBotController::ClearIntentFailurePenalties()
+{
+    for (uint8 i = 0; i < static_cast<uint8>(FriendIntent::Max); ++i)
+    {
+        intentFailurePenalty[i] = 0;
+        intentFailurePenaltyAt[i] = 0;
+    }
+}
+
 bool FriendBotController::ExecuteTaskIntent(FriendIntent intent, const FriendSituation& situation)
 {
     if (!ai || !ai->GetBot())
@@ -4409,10 +4497,6 @@ bool FriendBotController::IsSafeForTaskActivity(const FriendSituation& situation
 FriendTaskType FriendBotController::SelectTaskForIntent(FriendIntent intent, const FriendSituation& situation)
 {
     const time_t now = time(nullptr);
-    const bool explicitCommandIntent = command == FriendCommand::Shop && intent == FriendIntent::Resupply;
-    if (!explicitCommandIntent && lastBlockedIntentUntil > now && lastBlockedIntent == intent)
-        return FriendTaskType::None;
-
     if (executionTask != FriendTaskType::None && executionTaskUntil > now &&
         IntentForTask(executionTask) == intent)
         return executionTask;
@@ -4575,34 +4659,28 @@ bool FriendBotController::ExecuteCurrentTask(const FriendSituation& situation)
             break;
 
         case FriendTaskType::HangOut:
-            if (mode == FriendMode::Solo && !NeedsTownChores(situation))
-            {
-                if (situation.possibleTargetsCount > 0 &&
-                    situation.botMana >= sPlayerbotAIConfig.lowMana &&
-                    TryAction("attack anything", "friend bored") == FriendExecutionResult::Done)
-                {
-                    MaybeSayActivity(situation, "bored-grind", {
-                        "I'm going to fight something nearby.",
-                        "I'll clear a few nearby."
-                    }, 45, 75);
-                    executionNextActionAt = now + urand(5, 12);
-                    return true;
-                }
-
-                if (ExecuteTaskTravelGoal(situation, FRIEND_EXPLORE_TRAVEL_PURPOSE, FriendTaskType::HangOut,
-                    "bored explore", {
-                        "I'm going to look around a bit.",
-                        "I'll scout around nearby."
-                    }))
-                {
-                    executionNextActionAt = IsFriendMovementAction(lastAction) ? now : now + urand(6, 14);
-                    return true;
-                }
-            }
-
             if (mode != FriendMode::Solo && MoveInLeaderOrbit(situation, "idle loiter", false))
             {
                 executionNextActionAt = now + urand(6, 14);
+                return true;
+            }
+
+            if (ai && ai->GetBot() && urand(0, 3) == 0)
+            {
+                switch (urand(0, 8))
+                {
+                    case 0: ai->GetBot()->HandleEmoteCommand(EMOTE_ONESHOT_WAVE); break;
+                    case 1: ai->GetBot()->HandleEmoteCommand(EMOTE_ONESHOT_TALK); break;
+                    case 2: ai->GetBot()->HandleEmoteCommand(EMOTE_ONESHOT_CHEER); break;
+                    case 3: ai->GetBot()->HandleEmoteCommand(EMOTE_ONESHOT_QUESTION); break;
+                    case 4: ai->GetBot()->HandleEmoteCommand(EMOTE_ONESHOT_KNEEL); break;
+                    case 5: ai->GetBot()->HandleEmoteCommand(EMOTE_ONESHOT_DANCE); break;
+                    default: ai->GetBot()->HandleEmoteCommand(EMOTE_ONESHOT_TALK); break;
+                }
+
+                executionNextActionAt = now + urand(8, 20);
+                SetResult(lastIntent, "social emote", FriendExecutionResult::Done);
+                ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
                 return true;
             }
 
@@ -4620,10 +4698,7 @@ bool FriendBotController::ExecuteCurrentTask(const FriendSituation& situation)
     ClearExecutionState();
     executionNextActionAt = now + urand(4, 10);
     if (IsActiveTask(failedGoal))
-    {
-        lastBlockedIntent = failedIntent;
-        lastBlockedIntentUntil = now + urand(12, 28);
-    }
+        AddIntentFailurePenalty(failedIntent, failedGoal == FriendTaskType::Resupply ? 120 : 80);
 
     if (IsActiveTask(failedGoal))
     {
@@ -5146,6 +5221,9 @@ void FriendBotController::SetResult(FriendIntent intent, const std::string& acti
     lastIntent = intent;
     lastAction = action;
     lastResult = result;
+
+    if (result == FriendExecutionResult::Done || result == FriendExecutionResult::IntentionalIdle)
+        ClearIntentFailurePenalty(intent);
 }
 
 void FriendBotController::MaybeSayStatus(const FriendSituation& situation)
@@ -5581,19 +5659,7 @@ std::vector<std::string> FriendBotController::PullActions(const FriendSituation&
         situation.nearbyPartyMembers < 2 || situation.possibleTargetsCount == 0 || situation.possibleTargetsCount > 2)
         return actions;
 
-    switch (ai->GetBot()->getClass())
-    {
-        case CLASS_HUNTER:
-        case CLASS_MAGE:
-        case CLASS_WARLOCK:
-        case CLASS_PRIEST:
-        case CLASS_SHAMAN:
-        case CLASS_DRUID:
-            actions.push_back("attack anything");
-            break;
-        default:
-            break;
-    }
+    actions.push_back("attack anything");
 
     return actions;
 }
@@ -5775,6 +5841,7 @@ std::string FriendBotController::IntentName(FriendIntent value)
         case FriendIntent::Explore: return "explore";
         case FriendIntent::HangOut: return "hang out";
         case FriendIntent::DealDamage: return "damage";
+        case FriendIntent::Max: return "max";
     }
 
     return "unknown";

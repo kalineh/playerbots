@@ -78,7 +78,8 @@ namespace ai
         Grind,
         Explore,
         HangOut,
-        DealDamage
+        DealDamage,
+        Max
     };
 
     enum class FriendExecutionResult : uint8
@@ -294,6 +295,10 @@ namespace ai
             std::initializer_list<const char*> lines, uint32 chancePercent = 100, uint32 cooldownSeconds = 30);
         void ResetTemporaryCommandIfSatisfied(const FriendSituation& situation);
         void ClearExecutionState();
+        int32 IntentFailurePenalty(FriendIntent intent, time_t now) const;
+        void AddIntentFailurePenalty(FriendIntent intent, int32 amount);
+        void ClearIntentFailurePenalty(FriendIntent intent);
+        void ClearIntentFailurePenalties();
         bool PrintInventory(Player* requester, const std::string& filter);
         bool PrintEquipment(Player* requester, const std::string& slotName);
         void PrintHelp(Player* requester) const;
@@ -322,7 +327,6 @@ namespace ai
         FriendCommand command = FriendCommand::None;
         FriendVerbosity verbosity = FriendVerbosity::Silent;
         FriendIntent lastIntent = FriendIntent::FollowOrIdle;
-        FriendIntent lastBlockedIntent = FriendIntent::FollowOrIdle;
         FriendExecutionResult lastResult = FriendExecutionResult::None;
         FriendProposal pendingProposal = FriendProposal::None;
         FriendSituation lastSituation;
@@ -336,8 +340,9 @@ namespace ai
         time_t manualAttackUntil = 0;
         time_t manualHealUntil = 0;
         time_t manualBuffUntil = 0;
-        time_t lastBlockedIntentUntil = 0;
         ObjectGuid manualHealGuid;
+        int32 intentFailurePenalty[static_cast<uint8>(FriendIntent::Max)] = {};
+        time_t intentFailurePenaltyAt[static_cast<uint8>(FriendIntent::Max)] = {};
         FriendTaskType executionTask = FriendTaskType::None;
         time_t executionTaskUntil = 0;
         time_t executionNextActionAt = 0;
