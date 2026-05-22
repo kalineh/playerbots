@@ -267,6 +267,8 @@ namespace ai
         bool ForceLevelSync(Player* requester, std::string& response);
         bool ForceGearSync(Player* requester, std::string& response);
         bool ForceGearEmpty(Player* requester, std::string& response);
+        bool ForceItemClear(Player* requester, std::string& response);
+        bool ForceItemJunk(Player* requester, std::string& response);
         bool ApplyFriendLevel(uint32 level);
         uint8 EquippedBagSlots() const;
         Item* FindBestTradeItem(const std::string& fragment) const;

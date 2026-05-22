@@ -27,7 +27,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v24";
+    const char* FRIEND_BOT_VERSION = "v25";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -327,6 +327,36 @@ namespace
         }
 
         return result;
+    }
+
+    void ClearFriendInventoryValues(PlayerbotAI* ai)
+    {
+        if (!ai || !ai->GetAiObjectContext())
+            return;
+
+        AiObjectContext* context = ai->GetAiObjectContext();
+        context->ClearValues("bag space");
+        context->ClearValues("inventory items");
+        context->ClearValues("item count");
+        context->ClearValues("item usage");
+    }
+
+    bool StoreFriendDebugItem(Player* bot, uint32 itemId, uint32 count)
+    {
+        if (!bot || !itemId || !count || !sObjectMgr.GetItemPrototype(itemId))
+            return false;
+
+        ItemPosCountVec dest;
+        InventoryResult result = bot->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, itemId, count);
+        if (result != EQUIP_ERR_OK)
+            return false;
+
+        Item* item = bot->StoreNewItem(dest, itemId, true);
+        if (!item)
+            return false;
+
+        bot->SendNewItem(item, count, true, false);
+        return true;
     }
 
     uint32 CountFriendSellItems(PlayerbotAI* ai)
@@ -649,6 +679,12 @@ bool FriendBotController::HandleCommand(const std::string& rawCommand, Player* r
 
     if (cmd == "forcegearempty" || cmd == "force gear empty" || cmd == "gear empty")
         return ForceGearEmpty(requester, response);
+
+    if (cmd == "forceitemclear" || cmd == "force item clear" || cmd == "item clear")
+        return ForceItemClear(requester, response);
+
+    if (cmd == "forceitemjunk" || cmd == "force item junk" || cmd == "item junk")
+        return ForceItemJunk(requester, response);
 
     if (StartsWith(cmd, "forcelevel ") || StartsWith(cmd, "force level "))
     {
@@ -4452,6 +4488,106 @@ bool FriendBotController::ForceGearEmpty(Player* requester, std::string& respons
     return true;
 }
 
+bool FriendBotController::ForceItemClear(Player* requester, std::string& response)
+{
+    (void)requester;
+    if (!ai || !ai->GetBot())
+    {
+        response = "I can't clear items right now.";
+        return true;
+    }
+
+    static const uint32 HEARTHSTONE_ITEM_ID = 6948;
+
+    Player* bot = ai->GetBot();
+    struct ItemSlot
+    {
+        uint8 bag;
+        uint8 slot;
+        uint32 count;
+    };
+
+    std::vector<ItemSlot> remove;
+    auto queueRemove = [&](Item* item)
+    {
+        if (!item || item->IsInTrade() || !item->GetProto() || item->GetProto()->ItemId == HEARTHSTONE_ITEM_ID)
+            return;
+
+        remove.push_back({ item->GetBagSlot(), item->GetSlot(), item->GetCount() });
+    };
+
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        queueRemove(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+
+    for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+    {
+        Bag* pBag = (Bag*)bot->GetItemByPos(INVENTORY_SLOT_BAG_0, bag);
+        if (!pBag)
+            continue;
+
+        for (uint8 slot = 0; slot < pBag->GetBagSize(); ++slot)
+            queueRemove(bot->GetItemByPos(bag, slot));
+    }
+
+    uint32 removed = 0;
+    for (const ItemSlot& slot : remove)
+    {
+        bot->DestroyItem(slot.bag, slot.slot, true);
+        removed += slot.count;
+    }
+
+    ClearFriendInventoryValues(ai);
+    std::ostringstream out;
+    out << "Cleared " << removed << " bag item(s), keeping hearthstone.";
+    response = out.str();
+    return true;
+}
+
+bool FriendBotController::ForceItemJunk(Player* requester, std::string& response)
+{
+    (void)requester;
+    if (!ai || !ai->GetBot())
+    {
+        response = "I can't add junk items right now.";
+        return true;
+    }
+
+    static const uint32 TEST_ITEMS[] =
+    {
+        // Poor quality gear.
+        1376, 1377, 1378, 1379, 1380, 1411, 1412, 1413, 1414, 1415, 1416,
+        // Low-level green gear.
+        4561, 4562, 4563, 4564, 4565, 4566, 4567, 4568, 4569, 4570, 4571, 4575,
+        3184, 3192,
+        // Vendor trash.
+        7073, 7074, 7096
+    };
+
+    Player* bot = ai->GetBot();
+    uint32 added = 0;
+    uint32 failedInRow = 0;
+    const uint32 itemCount = sizeof(TEST_ITEMS) / sizeof(TEST_ITEMS[0]);
+    for (uint32 attempts = 0; attempts < itemCount * 8 && failedInRow < itemCount; ++attempts)
+    {
+        uint32 itemId = TEST_ITEMS[attempts % itemCount];
+        if (StoreFriendDebugItem(bot, itemId, 1))
+        {
+            ++added;
+            failedInRow = 0;
+        }
+        else
+            ++failedInRow;
+    }
+
+    ClearFriendInventoryValues(ai);
+    std::ostringstream out;
+    out << "Added " << added << " junk test item(s).";
+    if (!added)
+        out << " Bags may be full.";
+    response = out.str();
+    return true;
+}
+
 bool FriendBotController::ApplyFriendLevel(uint32 level)
 {
     if (!ai || !ai->GetBot())
@@ -5724,7 +5860,7 @@ void FriendBotController::PrintHelp(Player* requester) const
         PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
     ai->TellPlayerNoFacing(requester, "progress: ok, no, forcelevel N, forcelevelsync, forcegearsync, forcegearempty",
         PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
-    ai->TellPlayerNoFacing(requester, "debug: report, version, intent/verbose, debug, weights, silent, items [filter], equip [slot], trade <item>, help",
+    ai->TellPlayerNoFacing(requester, "debug: report, version, intent/verbose, debug, weights, silent, items [filter], equip [slot], trade <item>, forceitemclear, forceitemjunk, help",
         PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
 }
 
