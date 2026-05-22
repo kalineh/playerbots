@@ -562,7 +562,6 @@ FriendSituation FriendBotController::BuildSituation()
     AiObjectContext* context = ai->GetAiObjectContext();
 
     situation.inCombat = sServerFacade.IsInCombat(bot);
-    situation.inDungeon = bot->GetMap() && (bot->GetMap()->IsDungeon() || bot->GetMap()->IsRaid());
     situation.healerish = ai->ContainsStrategy(STRATEGY_TYPE_HEAL);
     situation.tankish = ai->ContainsStrategy(STRATEGY_TYPE_TANK);
     situation.ranged = ai->ContainsStrategy(STRATEGY_TYPE_RANGED) || ai->IsRanged(bot, false);
@@ -807,14 +806,14 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
     if (command == FriendCommand::Shop && IsSafeForTownChores(situation))
         return FriendIntent::Resupply;
 
-    const bool soloFree = mode == FriendMode::Solo && !situation.inDungeon && command == FriendCommand::None;
+    const bool soloFree = mode == FriendMode::Solo && command == FriendCommand::None;
     const bool partyNearby = !soloFree || !situation.leaderSafe || situation.leaderDistance <= SoftLeashDistance(situation);
     const bool localPartyInCombat = situation.partyInCombat && partyNearby;
 
     float softLeash = SoftLeashDistance(situation);
     float hardLeash = HardLeashDistance(situation);
     if (!soloFree && situation.leaderSafe && situation.leaderDistance > hardLeash &&
-        (!situation.inCombat || situation.inDungeon || !situation.hasAttackers))
+        (!situation.inCombat || mode == FriendMode::Dungeon || !situation.hasAttackers))
         return FriendIntent::ReturnToParty;
 
     const bool fragileThreat = situation.botHasThreat && !situation.tankish &&
@@ -855,7 +854,7 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
     if (manualBuffUntil > now && !situation.inCombat && !localPartyInCombat)
         return FriendIntent::BuffOrCureParty;
 
-    if (situation.inCombat && situation.inDungeon && situation.possibleTargetsCount > 1 && !situation.tankish)
+    if (situation.inCombat && mode == FriendMode::Dungeon && situation.possibleTargetsCount > 1 && !situation.tankish)
         return FriendIntent::CrowdControl;
 
     if (!situation.inCombat && !localPartyInCombat && (situation.damagedPartyMembers == 0 || !partyNearby) &&
@@ -870,7 +869,7 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
         situation.leaderSafe && situation.leaderDistance <= SoftLeashDistance(situation))
         return FriendIntent::LootNearby;
 
-    if (mode != FriendMode::Dungeon && !situation.inDungeon && !situation.inCombat && !localPartyInCombat &&
+    if (mode != FriendMode::Dungeon && !situation.inCombat && !localPartyInCombat &&
         situation.leaderSafe && situation.leaderDistance <= sPlayerbotAIConfig.reactDistance &&
         situation.nearbyPartyMembers >= 2 && situation.possibleTargetsCount > 0 && situation.possibleTargetsCount <= 2 &&
         situation.botHealth >= sPlayerbotAIConfig.mediumHealth && situation.botMana >= sPlayerbotAIConfig.mediumMana)
@@ -1732,7 +1731,7 @@ bool FriendBotController::FindRangedCombatPosition(Unit* target, const FriendSit
         return false;
 
     Player* bot = ai->GetBot();
-    const float desiredDistance = situation.inDungeon ? FRIEND_RANGED_SPACING_DUNGEON : FRIEND_RANGED_SPACING_WORLD;
+    const float desiredDistance = mode == FriendMode::Dungeon ? FRIEND_RANGED_SPACING_DUNGEON : FRIEND_RANGED_SPACING_WORLD;
 
     float dx = bot->GetPositionX() - target->GetPositionX();
     float dy = bot->GetPositionY() - target->GetPositionY();
@@ -2018,7 +2017,7 @@ FriendCombatStyle FriendBotController::GetCombatStyle(const FriendSituation& sit
     if (urgent)
         return FriendCombatStyle::Burn;
 
-    const bool hardFight = situation.inDungeon ||
+    const bool hardFight = mode == FriendMode::Dungeon ||
         situation.targetIsElite ||
         situation.possibleTargetsCount > 1 ||
         situation.attackersCount > 1 ||
@@ -2043,7 +2042,7 @@ bool FriendBotController::ShouldConserveDamageMana(const FriendSituation& situat
 
 bool FriendBotController::IsLowPressureFight(const FriendSituation& situation) const
 {
-    return !situation.inDungeon &&
+    return mode != FriendMode::Dungeon &&
         !situation.targetIsElite &&
         situation.possibleTargetsCount <= 1 &&
         situation.attackersCount <= 1 &&
@@ -2200,7 +2199,7 @@ bool FriendBotController::TryCatalogDamage(const FriendSituation& situation, con
         if (ability.Has(FRIEND_ABILITY_HEAL) || ability.Has(FRIEND_ABILITY_BUFF_CORE) || ability.Has(FRIEND_ABILITY_BUFF_SITUATIONAL))
             continue;
 
-        if (situation.inDungeon && ability.Has(FRIEND_ABILITY_FEAR))
+        if (mode == FriendMode::Dungeon && ability.Has(FRIEND_ABILITY_FEAR))
             continue;
 
         if (ability.Has(FRIEND_ABILITY_CC) && !ability.Has(FRIEND_ABILITY_DAMAGE) && !ability.Has(FRIEND_ABILITY_INTERRUPT))
@@ -2209,7 +2208,7 @@ bool FriendBotController::TryCatalogDamage(const FriendSituation& situation, con
         if (ability.Has(FRIEND_ABILITY_DOT) && targetHealth < 35)
             continue;
 
-        if (ability.Has(FRIEND_ABILITY_AOE) && situation.inDungeon && situation.possibleTargetsCount < 3)
+        if (ability.Has(FRIEND_ABILITY_AOE) && mode == FriendMode::Dungeon && situation.possibleTargetsCount < 3)
             continue;
 
         if (ability.Has(FRIEND_ABILITY_DAMAGE_COOLDOWN) && !situation.targetIsElite && situation.balance >= 90)
@@ -2376,7 +2375,7 @@ bool FriendBotController::TryCatalogCrowdControl(const FriendSituation& situatio
         if (!ability.Has(FRIEND_ABILITY_CC) && !ability.Has(FRIEND_ABILITY_INTERRUPT))
             continue;
 
-        if (situation.inDungeon && ability.Has(FRIEND_ABILITY_FEAR))
+        if (mode == FriendMode::Dungeon && ability.Has(FRIEND_ABILITY_FEAR))
             continue;
 
         Unit* target = GetCrowdControlTarget(situation, ability, damageTarget);
@@ -2402,7 +2401,7 @@ bool FriendBotController::TryCatalogCrowdControl(const FriendSituation& situatio
             reason = "interrupt";
         }
         if (ability.Has(FRIEND_ABILITY_FEAR))
-            score -= situation.inDungeon ? 100 : 10;
+            score -= mode == FriendMode::Dungeon ? 100 : 10;
         if (ability.Has(FRIEND_ABILITY_AOE) && situation.possibleTargetsCount < 3)
             score -= 20;
         if (ability.Has(FRIEND_ABILITY_ROOT))
@@ -2606,7 +2605,7 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
 
 bool FriendBotController::TryTravelForResupply(const FriendSituation& situation)
 {
-    if (mode == FriendMode::Dungeon || situation.inDungeon)
+    if (mode == FriendMode::Dungeon)
         return false;
 
     if (command != FriendCommand::Shop && mode != FriendMode::Solo)
@@ -2779,7 +2778,7 @@ bool FriendBotController::IsSafeForTownChores(const FriendSituation& situation) 
         command == FriendCommand::Recover)
         return false;
 
-    const bool remoteSoloPartyCombat = mode == FriendMode::Solo && !situation.inDungeon &&
+    const bool remoteSoloPartyCombat = mode == FriendMode::Solo &&
         situation.leaderSafe && situation.leaderDistance > SoftLeashDistance(situation);
 
     if (situation.inCombat || situation.hasAttackers ||
@@ -2794,7 +2793,7 @@ bool FriendBotController::IsSafeForTownChores(const FriendSituation& situation) 
          situation.damagedPartyMembers > 0))
         return false;
 
-    if (mode == FriendMode::Dungeon || situation.inDungeon)
+    if (mode == FriendMode::Dungeon)
         return false;
 
     if (command == FriendCommand::Shop || mode == FriendMode::Solo)
@@ -2821,7 +2820,7 @@ bool FriendBotController::NeedsTownChores(const FriendSituation& situation) cons
 
 bool FriendBotController::WantsTownProgression(const FriendSituation& situation) const
 {
-    if (mode == FriendMode::Dungeon || situation.inDungeon)
+    if (mode == FriendMode::Dungeon)
         return false;
 
     const bool alreadyTownReady = situation.inTown || situation.nearbyVendor || situation.nearbyRepair;
@@ -3206,7 +3205,7 @@ uint8 FriendBotController::EquippedBagSlots() const
 void FriendBotController::MaybeProposeTownChores(const FriendSituation& situation)
 {
     if (!ai || !ai->GetBot() || mode != FriendMode::Party || command != FriendCommand::None ||
-        situation.inDungeon || situation.inCombat || situation.hasAttackers || situation.partyInCombat)
+        situation.inCombat || situation.hasAttackers || situation.partyInCombat)
         return;
 
     const time_t now = time(nullptr);
@@ -3279,7 +3278,7 @@ bool FriendBotController::IsSafeForIdleActivity(const FriendSituation& situation
         command == FriendCommand::Recover)
         return false;
 
-    const bool remoteSoloPartyCombat = mode == FriendMode::Solo && !situation.inDungeon &&
+    const bool remoteSoloPartyCombat = mode == FriendMode::Solo &&
         situation.leaderSafe && situation.leaderDistance > SoftLeashDistance(situation);
 
     if (situation.inCombat || situation.hasAttackers ||
@@ -3575,7 +3574,7 @@ bool FriendBotController::ExecuteCurrentIdleGoal(const FriendSituation& situatio
 bool FriendBotController::ExecuteIdleTravelGoal(const FriendSituation& situation, uint32 purpose, FriendIdleGoal workGoal,
     const std::string& action, std::initializer_list<const char*> lines)
 {
-    if (!ai || !ai->GetBot() || !ai->GetAiObjectContext() || situation.inDungeon || purpose == 0)
+    if (!ai || !ai->GetBot() || !ai->GetAiObjectContext() || mode == FriendMode::Dungeon || purpose == 0)
         return false;
 
     const bool soloTravel = mode == FriendMode::Solo;
@@ -3690,11 +3689,8 @@ float FriendBotController::PreferredLeaderDistance(const FriendSituation& situat
     float followRange = ai ? ai->GetRange("follow") : 10.0f;
     if (mode == FriendMode::Dungeon)
         return std::max(followRange, 6.0f);
-    if (mode == FriendMode::Solo && !situation.inDungeon)
+    if (mode == FriendMode::Solo)
         return std::max(followRange * 2.5f, 28.0f);
-
-    if (situation.inDungeon)
-        return std::max(followRange, 8.0f);
 
     if (situation.inTown)
         return std::max(followRange * 1.75f, 18.0f);
@@ -3707,11 +3703,8 @@ float FriendBotController::SoftLeashDistance(const FriendSituation& situation) c
     float followRange = ai ? ai->GetRange("follow") : 10.0f;
     if (mode == FriendMode::Dungeon)
         return std::max(followRange * 1.25f, 12.0f);
-    if (mode == FriendMode::Solo && !situation.inDungeon)
+    if (mode == FriendMode::Solo)
         return std::max(followRange * 4.0f, 60.0f);
-
-    if (situation.inDungeon)
-        return std::max(followRange * 1.5f, 16.0f);
 
     if (situation.inTown)
         return std::max(followRange * 3.0f, 45.0f);
@@ -3722,10 +3715,10 @@ float FriendBotController::SoftLeashDistance(const FriendSituation& situation) c
 float FriendBotController::HardLeashDistance(const FriendSituation& situation) const
 {
     float followRange = ai ? ai->GetRange("follow") : 10.0f;
-    if (mode == FriendMode::Solo && !situation.inDungeon)
+    if (mode == FriendMode::Solo)
         return std::max(followRange * 6.0f, 120.0f);
 
-    if (situation.inDungeon)
+    if (mode == FriendMode::Dungeon)
         return std::max(followRange * 2.5f, 30.0f);
 
     if (situation.inTown)
@@ -4098,7 +4091,7 @@ void FriendBotController::ResetTemporaryCommandIfSatisfied(const FriendSituation
         idleTravelPurpose = 0;
     }
 
-    if (command == FriendCommand::Shop && (mode == FriendMode::Dungeon || situation.inDungeon))
+    if (command == FriendCommand::Shop && mode == FriendMode::Dungeon)
     {
         command = FriendCommand::None;
         ClearIdleState();
@@ -4141,7 +4134,7 @@ std::vector<std::string> FriendBotController::SelfPreservationActions(const Frie
     {
         case CLASS_WARRIOR:
             AddActions(actions, { "shield wall", "last stand", "challenging shout" });
-            if (!situation.inDungeon)
+            if (mode != FriendMode::Dungeon)
                 actions.push_back("intimidating shout");
             break;
         case CLASS_PALADIN:
@@ -4164,7 +4157,7 @@ std::vector<std::string> FriendBotController::SelfPreservationActions(const Frie
             break;
         case CLASS_WARLOCK:
             AddActions(actions, { "death coil", "sacrifice", "soulshatter", "drain life" });
-            if (!situation.inDungeon)
+            if (mode != FriendMode::Dungeon)
                 actions.push_back("fear");
             break;
         case CLASS_DRUID:
@@ -4248,7 +4241,7 @@ std::vector<std::string> FriendBotController::BuffOrCureActions(const FriendSitu
 std::vector<std::string> FriendBotController::CrowdControlActions(const FriendSituation& situation) const
 {
     std::vector<std::string> actions;
-    if (!situation.inDungeon && situation.possibleTargetsCount < 3)
+    if (mode != FriendMode::Dungeon && situation.possibleTargetsCount < 3)
         return actions;
 
     AddActions(actions, {
@@ -4257,7 +4250,7 @@ std::vector<std::string> FriendBotController::CrowdControlActions(const FriendSi
         "frost nova", "earthbind totem", "hammer of justice", "bash", "scatter shot"
     });
 
-    if (!situation.inDungeon)
+    if (mode != FriendMode::Dungeon)
         AddActions(actions, { "fear on cc", "psychic scream", "intimidating shout" });
 
     return actions;
@@ -4266,7 +4259,7 @@ std::vector<std::string> FriendBotController::CrowdControlActions(const FriendSi
 std::vector<std::string> FriendBotController::PullActions(const FriendSituation& situation) const
 {
     std::vector<std::string> actions;
-    if (mode == FriendMode::Dungeon || situation.inDungeon || situation.inCombat || situation.partyInCombat || situation.damagedPartyMembers ||
+    if (mode == FriendMode::Dungeon || situation.inCombat || situation.partyInCombat || situation.damagedPartyMembers ||
         !situation.leaderSafe || situation.leaderDistance > sPlayerbotAIConfig.reactDistance ||
         situation.nearbyPartyMembers < 2 || situation.possibleTargetsCount == 0 || situation.possibleTargetsCount > 2)
         return actions;

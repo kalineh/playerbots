@@ -97,7 +97,6 @@ namespace ai
     struct FriendSituation
     {
         bool inCombat = false;
-        bool inDungeon = false;
         bool hasAttackers = false;
         bool hasPossibleTargets = false;
         bool hasTarget = false;
