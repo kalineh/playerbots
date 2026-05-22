@@ -25,7 +25,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v9";
+    const char* FRIEND_BOT_VERSION = "v10";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -1567,7 +1567,12 @@ FriendExecutionResult FriendBotController::TryServiceAction(const std::string& n
     sServerFacade.SetFacingTo(bot, npc);
 
     FriendExecutionResult result = FriendExecutionResult::None;
-    if (param.empty())
+    if (name == "sell" && !param.empty())
+    {
+        result = TryDirectSellItems(npc, param) ? FriendExecutionResult::Done : FriendExecutionResult::Failed;
+        SetResult(lastIntent, displayName, result);
+    }
+    else if (param.empty())
         result = TryAction(name, "rpg action");
     else
         result = TryActionWithParam(name, param, "rpg action");
@@ -1576,6 +1581,52 @@ FriendExecutionResult FriendBotController::TryServiceAction(const std::string& n
         ReportServiceTransaction(ai, name, npc, moneyBefore, bot->GetMoney(), itemsBefore, CountInventoryItems(bot));
 
     return result;
+}
+
+bool FriendBotController::TryDirectSellItems(Creature* npc, const std::string& qualifier)
+{
+    if (!ai || !ai->GetBot() || !npc)
+        return false;
+
+    Player* bot = ai->GetBot();
+    if (!bot->GetNPCIfCanInteractWith(npc->GetObjectGuid(), FriendVendorNpcFlags()))
+        return false;
+
+    std::list<Item*> items = ai->InventoryParseItems(qualifier, IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
+    if (items.empty())
+        return false;
+
+    items.sort([](Item* left, Item* right)
+    {
+        uint32 leftPrice = left && left->GetProto() ? left->GetProto()->SellPrice * left->GetCount() : 0;
+        uint32 rightPrice = right && right->GetProto() ? right->GetProto()->SellPrice * right->GetCount() : 0;
+        return leftPrice < rightPrice;
+    });
+
+    uint32 soldItems = 0;
+    for (Item* item : items)
+    {
+        if (!item || !item->GetProto() || !item->GetProto()->SellPrice)
+            continue;
+
+        ObjectGuid itemGuid = item->GetObjectGuid();
+        uint32 count = item->GetCount();
+        std::string itemName = item->GetProto()->Name1;
+        uint32 itemId = item->GetProto()->ItemId;
+        uint32 moneyBefore = bot->GetMoney();
+
+        WorldPacket packet;
+        packet << npc->GetObjectGuid() << itemGuid << count;
+        bot->GetSession()->HandleSellItemOpcode(packet);
+
+        if (bot->GetMoney() > moneyBefore)
+        {
+            ++soldItems;
+            sPlayerbotAIConfig.logEvent(ai, "FriendSellAction", itemName, std::to_string(itemId));
+        }
+    }
+
+    return soldItems > 0;
 }
 
 void FriendBotController::ClearFriendTravelTarget()
@@ -3320,23 +3371,34 @@ bool FriendBotController::TryTravelForResupply(const FriendSituation& situation)
     if (mode == FriendMode::Dungeon)
         return false;
 
-    if (command != FriendCommand::Shop && mode != FriendMode::Solo)
-        return false;
+    const bool canStartResupplyTravel = command == FriendCommand::Shop || mode == FriendMode::Solo;
+    const bool existingServiceTarget = situation.travelTargetPurpose == FRIEND_VENDOR_TRAVEL_PURPOSE ||
+        situation.travelTargetPurpose == FRIEND_REPAIR_TRAVEL_PURPOSE;
 
     if (situation.travelTargetPreparing && !resupplyTravelRequested)
     {
-        SetResult(lastIntent, "shop blocked:travel busy", FriendExecutionResult::BlockedNotUseful);
-        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
-        return true;
+        if (existingServiceTarget && NeedsTownChores(situation))
+            resupplyTravelRequested = true;
+        else
+        {
+            SetResult(lastIntent, "shop blocked:travel busy", FriendExecutionResult::BlockedNotUseful);
+            ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+            return true;
+        }
     }
 
     if ((situation.travelTargetPreparing || situation.travelTargetTraveling || situation.travelTargetActive) &&
         !resupplyTravelRequested)
     {
-        ClearFriendTravelTarget();
-        SetResult(lastIntent, "clear travel target", FriendExecutionResult::Done);
-        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
-        return true;
+        if (existingServiceTarget && NeedsTownChores(situation))
+            resupplyTravelRequested = true;
+        else
+        {
+            ClearFriendTravelTarget();
+            SetResult(lastIntent, "clear travel target", FriendExecutionResult::Done);
+            ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+            return true;
+        }
     }
 
     if (situation.travelTargetPreparing && resupplyTravelRequested)
@@ -3386,6 +3448,9 @@ bool FriendBotController::TryTravelForResupply(const FriendSituation& situation)
             ai->ChangeStrategy("+travel once", BotState::BOT_STATE_NON_COMBAT);
         return TryAction("move to travel target", "friend resupply", 0, ai->GetBot()) == FriendExecutionResult::Done;
     }
+
+    if (!canStartResupplyTravel)
+        return false;
 
     uint32 purpose = (situation.shouldRepair && !situation.nearbyRepair) ?
         FRIEND_REPAIR_TRAVEL_PURPOSE : FRIEND_VENDOR_TRAVEL_PURPOSE;
@@ -3523,10 +3588,6 @@ bool FriendBotController::MoveToFriendTravelTarget(const FriendSituation& situat
     }
 
     if (!NormalizeFriendMovePosition(x, y, z))
-        return false;
-
-    WorldPosition to(bot->GetMapId(), x, y, z);
-    if (!from.canPathTo(to, bot) || !bot->IsWithinLOS(x, y, z + bot->GetCollisionHeight(), true))
         return false;
 
     ClearFriendMovement(false);

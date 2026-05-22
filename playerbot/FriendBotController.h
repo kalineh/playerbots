@@ -198,6 +198,7 @@ namespace ai
         FriendExecutionResult TryRequestTravelTarget(uint32 purpose);
         Creature* GetNearbyServiceNpc(uint32 npcFlags) const;
         FriendExecutionResult TryServiceAction(const std::string& name, const std::string& param, uint32 npcFlags);
+        bool TryDirectSellItems(Creature* npc, const std::string& qualifier);
         void ClearFriendTravelTarget();
         bool TryPrerequisites(Action* action, const std::string& source, uint8 depth, Player* owner);
         bool TryCatalogDamage(const FriendSituation& situation, const std::string& source);
