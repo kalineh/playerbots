@@ -230,6 +230,7 @@ namespace ai
         void SetCurrentDamageTarget(Unit* target, const std::string& reason);
         Unit* GetHealTarget(const FriendSituation& situation) const;
         std::vector<Unit*> GetPartyTargets() const;
+        bool ShouldLootNow(const FriendSituation& situation, bool localPartyInCombat) const;
         bool ExecuteLoot(const FriendSituation& situation, bool allowObjects = false);
         bool MoveToRecoverPosition(const FriendSituation& situation);
         bool ExecuteResupply(const FriendSituation& situation);

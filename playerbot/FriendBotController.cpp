@@ -890,6 +890,9 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
     if (situation.inCombat && mode == FriendMode::Dungeon && situation.possibleTargetsCount > 1 && !situation.tankish)
         return FriendIntent::CrowdControl;
 
+    if (ShouldLootNow(situation, localPartyInCombat))
+        return FriendIntent::LootNearby;
+
     if (!situation.inCombat && !localPartyInCombat && (situation.damagedPartyMembers == 0 || !partyNearby) &&
         NeedsTownChores(situation) && IsSafeForTownChores(situation) &&
         (mode == FriendMode::Solo || situation.inTown || situation.nearbyVendor || situation.nearbyRepair))
@@ -897,10 +900,6 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
 
     if (!situation.inCombat && !localPartyInCombat && (situation.damagedPartyMembers == 0 || !partyNearby))
         return FriendIntent::BuffOrCureParty;
-
-    if (!situation.inCombat && !localPartyInCombat && situation.hasCreatureLoot &&
-        situation.leaderSafe && situation.leaderDistance <= SoftLeashDistance(situation))
-        return FriendIntent::LootNearby;
 
     if (mode != FriendMode::Dungeon && !situation.inCombat && !localPartyInCombat &&
         situation.leaderSafe && situation.leaderDistance <= sPlayerbotAIConfig.reactDistance &&
@@ -1086,7 +1085,15 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
             return false;
 
         case FriendIntent::LootNearby:
-            return ExecuteLoot(situation);
+            if (ExecuteLoot(situation))
+            {
+                MaybeSayActivity(situation, "loot", {
+                    "I'll grab the loot.",
+                    "Looting quick."
+                }, mode == FriendMode::Solo ? 35 : 18, 45);
+                return true;
+            }
+            return false;
 
         case FriendIntent::DealDamage:
             if (ShouldOpportunisticHeal(situation) && TryCatalogHeal(situation, "friend top off"))
@@ -1567,6 +1574,36 @@ std::vector<Unit*> FriendBotController::GetPartyTargets() const
     }
 
     return targets;
+}
+
+bool FriendBotController::ShouldLootNow(const FriendSituation& situation, bool localPartyInCombat) const
+{
+    if (!situation.hasCreatureLoot)
+        return false;
+
+    if (command != FriendCommand::None && command != FriendCommand::StayClose)
+        return false;
+
+    if (situation.inCombat || situation.hasAttackers || localPartyInCombat)
+        return false;
+
+    if (situation.botHealth < sPlayerbotAIConfig.mediumHealth)
+        return false;
+
+    const bool partyNearby = situation.leaderSafe && situation.leaderDistance <= SoftLeashDistance(situation);
+    if (partyNearby && situation.lowestPartyHealth < sPlayerbotAIConfig.mediumHealth)
+        return false;
+
+    if (mode == FriendMode::Solo && (!situation.leaderSafe || situation.leaderDistance > SoftLeashDistance(situation)))
+        return true;
+
+    if (!situation.leaderSafe)
+        return false;
+
+    if (mode == FriendMode::Dungeon)
+        return situation.leaderDistance <= PreferredLeaderDistance(situation);
+
+    return situation.leaderDistance <= SoftLeashDistance(situation);
 }
 
 Unit* FriendBotController::GetHealTarget(const FriendSituation& situation) const
