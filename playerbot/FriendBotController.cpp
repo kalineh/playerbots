@@ -12,6 +12,7 @@
 #include "strategy/Strategy.h"
 #include "strategy/actions/MovementActions.h"
 #include "strategy/values/BudgetValues.h"
+#include "strategy/values/ItemUsageValue.h"
 #include "strategy/values/PossibleAttackTargetsValue.h"
 #include "strategy/values/TravelValues.h"
 
@@ -26,7 +27,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v21";
+    const char* FRIEND_BOT_VERSION = "v22";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -290,16 +291,41 @@ namespace
         return count;
     }
 
-    uint32 CountBagItemsByQualifier(PlayerbotAI* ai, const std::string& qualifier)
+    std::string UsageQualifier(ItemUsage usage)
     {
-        if (!ai)
-            return 0;
+        return "usage " + std::to_string(static_cast<uint8>(usage));
+    }
 
-        uint32 count = 0;
-        std::list<Item*> items = ai->InventoryParseItems(qualifier, IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
-        for (Item* item : items)
+    void AddUniqueItems(std::list<Item*>& target, const std::list<Item*>& source)
+    {
+        for (Item* item : source)
         {
-            if (item)
+            if (item && std::find(target.begin(), target.end(), item) == target.end())
+                target.push_back(item);
+        }
+    }
+
+    std::list<Item*> FriendSellItems(PlayerbotAI* ai)
+    {
+        std::list<Item*> result;
+        if (!ai)
+            return result;
+
+        AddUniqueItems(result, ai->InventoryParseItems("vendor", IterateItemsMask::ITERATE_ITEMS_IN_BAGS));
+        AddUniqueItems(result, ai->InventoryParseItems("gray", IterateItemsMask::ITERATE_ITEMS_IN_BAGS));
+        AddUniqueItems(result, ai->InventoryParseItems("ah", IterateItemsMask::ITERATE_ITEMS_IN_BAGS));
+        AddUniqueItems(result, ai->InventoryParseItems(UsageQualifier(ItemUsage::ITEM_USAGE_BAD_EQUIP), IterateItemsMask::ITERATE_ITEMS_IN_BAGS));
+        AddUniqueItems(result, ai->InventoryParseItems(UsageQualifier(ItemUsage::ITEM_USAGE_BROKEN_EQUIP), IterateItemsMask::ITERATE_ITEMS_IN_BAGS));
+        AddUniqueItems(result, ai->InventoryParseItems(UsageQualifier(ItemUsage::ITEM_USAGE_FORCE_GREED), IterateItemsMask::ITERATE_ITEMS_IN_BAGS));
+        return result;
+    }
+
+    uint32 CountFriendSellItems(PlayerbotAI* ai)
+    {
+        uint32 count = 0;
+        for (Item* item : FriendSellItems(ai))
+        {
+            if (item && item->GetProto() && item->GetProto()->SellPrice)
                 count += item->GetCount();
         }
 
@@ -726,6 +752,12 @@ bool FriendBotController::HandleCommand(const std::string& rawCommand, Player* r
         return true;
     }
 
+    if (cmd == "trade" || StartsWith(cmd, "trade "))
+    {
+        std::string fragment = cmd == "trade" ? "" : Trim(rawCommand.substr(6));
+        return TradeMatchingItem(requester, fragment, response);
+    }
+
     if (cmd == "items" || StartsWith(cmd, "items "))
     {
         std::string filter = cmd == "items" ? "" : Trim(cmd.substr(6));
@@ -939,13 +971,12 @@ FriendSituation FriendBotController::BuildSituation()
         situation.durability = GetContextValue<uint8>(context, "durability inventory", 100);
         ReadFriendTravelSnapshot(bot, context->GetValue<TravelTarget*>("travel target")->Get(), situation);
 
-        uint32 vendorItems = CountBagItemsByQualifier(ai, "vendor");
-        uint32 trashItems = CountBagItemsByQualifier(ai, "gray");
+        uint32 sellItems = CountFriendSellItems(ai);
         uint32 minRepairCost = context->GetValue<uint32>("min repair cost")->Get();
         uint32 repairMoney = context->GetValue<uint32>("free money for", static_cast<uint32>(NeedMoneyFor::repair))->Get();
         situation.trainCost = context->GetValue<uint32>("train cost", TRAINER_TYPE_CLASS)->Get();
         situation.gearBudget = context->GetValue<uint32>("free money for", static_cast<uint32>(NeedMoneyFor::gear))->Get();
-        situation.shouldSell = vendorItems > 0 || trashItems > 0;
+        situation.shouldSell = sellItems > 0;
         situation.shouldRepair = situation.durability < 95 && minRepairCost > 0 && minRepairCost <= repairMoney;
         situation.lowFood = context->GetValue<uint32>("item count", "food")->Get() < 5;
         situation.lowWater = bot->GetMaxPower(POWER_MANA) > 0 && context->GetValue<uint32>("item count", "water")->Get() < 5;
@@ -1826,7 +1857,8 @@ bool FriendBotController::TryDirectSellItems(Creature* npc, const std::string& q
     if (!bot->GetNPCIfCanInteractWith(npc->GetObjectGuid(), FriendVendorNpcFlags()))
         return false;
 
-    std::list<Item*> items = ai->InventoryParseItems(qualifier, IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
+    std::list<Item*> items = qualifier == "friend" ?
+        FriendSellItems(ai) : ai->InventoryParseItems(qualifier, IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
     if (items.empty())
         return false;
 
@@ -1834,7 +1866,7 @@ bool FriendBotController::TryDirectSellItems(Creature* npc, const std::string& q
     uint32 soldMoney = 0;
     for (Item* item : items)
     {
-        if (!item || !item->GetProto() || !item->GetProto()->SellPrice)
+        if (!item || item->IsInTrade() || !item->GetProto() || !item->GetProto()->SellPrice)
             continue;
 
         std::string itemName = item->GetProto()->Name1;
@@ -3490,15 +3522,7 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
     {
         if (situation.shouldSell)
         {
-            if (TryServiceAction("sell", "vendor", FriendVendorNpcFlags()) == FriendExecutionResult::Done)
-            {
-                MaybeSayActivity(situation, "resupply-sell", {
-                    "Selling junk while I'm here.",
-                    "Clearing out my bags."
-                }, command == FriendCommand::Shop ? 70 : 25, 60);
-                return true;
-            }
-            if (TryServiceAction("sell", "gray", FriendVendorNpcFlags()) == FriendExecutionResult::Done)
+            if (TryServiceAction("sell", "friend", FriendVendorNpcFlags()) == FriendExecutionResult::Done)
             {
                 MaybeSayActivity(situation, "resupply-sell", {
                     "Selling junk while I'm here.",
@@ -5467,6 +5491,108 @@ bool FriendBotController::PrintEquipment(Player* requester, const std::string& s
     return true;
 }
 
+Item* FriendBotController::FindBestTradeItem(const std::string& fragment) const
+{
+    if (!ai || !ai->GetBot())
+        return nullptr;
+
+    std::string needle = Trim(fragment);
+    std::transform(needle.begin(), needle.end(), needle.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (needle.empty())
+        return nullptr;
+
+    Player* bot = ai->GetBot();
+    Item* best = nullptr;
+    int32 bestScore = -1;
+
+    auto consider = [&](Item* item)
+    {
+        if (!item || item->IsInTrade() || !item->CanBeTraded() || !item->GetProto())
+            return;
+
+        std::string searchable = item->GetProto()->Name1 + " " + ChatHelper::formatItem(item);
+        std::transform(searchable.begin(), searchable.end(), searchable.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        size_t match = searchable.find(needle);
+        if (match == std::string::npos)
+            return;
+
+        int32 score = 10000 - static_cast<int32>(std::min<size_t>(match, 100));
+        if (StartsWith(searchable, needle))
+            score += 5000;
+        if (searchable == needle)
+            score += 10000;
+        score += static_cast<int32>(item->GetProto()->Quality) * 100;
+        score += static_cast<int32>(std::min<uint32>(item->GetCount(), 20));
+
+        if (score > bestScore)
+        {
+            bestScore = score;
+            best = item;
+        }
+    };
+
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        consider(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+
+    for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+    {
+        Bag* pBag = (Bag*)bot->GetItemByPos(INVENTORY_SLOT_BAG_0, bag);
+        if (!pBag)
+            continue;
+
+        for (uint8 slot = 0; slot < pBag->GetBagSize(); ++slot)
+            consider(bot->GetItemByPos(bag, slot));
+    }
+
+    return best;
+}
+
+bool FriendBotController::TradeMatchingItem(Player* requester, const std::string& fragment, std::string& response)
+{
+    if (!ai || !requester)
+    {
+        response = "I can't trade right now.";
+        return true;
+    }
+
+    if (Trim(fragment).empty())
+    {
+        response = "Trade what?";
+        return true;
+    }
+
+    Item* item = FindBestTradeItem(fragment);
+    if (!item || !item->GetProto())
+    {
+        response = "I don't have a tradable item matching that.";
+        return true;
+    }
+
+    const std::string itemLink = ChatHelper::formatItem(item);
+    if (!ai->GetBot() || ai->GetBot()->GetMapId() != requester->GetMapId() ||
+        sServerFacade.GetDistance2d(ai->GetBot(), requester) > INTERACTION_DISTANCE)
+    {
+        response = "I have " + itemLink + ", but I'm too far away to trade.";
+        return true;
+    }
+
+    bool started = ai->DoSpecificAction("trade", Event("friend command", itemLink, requester), true);
+    if (started && ai->GetBot() && ai->GetBot()->GetTrader() == requester)
+        ai->DoSpecificAction("trade", Event("friend command", itemLink, requester), true);
+
+    if (!started)
+    {
+        response = "I couldn't start that trade.";
+        return true;
+    }
+
+    response = item->IsInTrade() ? "Trading " + itemLink + "." : "Opening trade for " + itemLink + ".";
+    SetResult(lastIntent, "trade:" + item->GetProto()->Name1, FriendExecutionResult::Done);
+    return true;
+}
+
 void FriendBotController::PrintHelp(Player* requester) const
 {
     if (!ai || !requester)
@@ -5478,7 +5604,7 @@ void FriendBotController::PrintHelp(Player* requester) const
         PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
     ai->TellPlayerNoFacing(requester, "progress: ok, no, forcelevel N, forcelevelsync, forcegearsync, forcegearempty",
         PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
-    ai->TellPlayerNoFacing(requester, "debug: report, version, intent/verbose, debug, weights, silent, items [filter], equip [slot], help",
+    ai->TellPlayerNoFacing(requester, "debug: report, version, intent/verbose, debug, weights, silent, items [filter], equip [slot], trade <item>, help",
         PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
 }
 

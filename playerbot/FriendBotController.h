@@ -269,6 +269,8 @@ namespace ai
         bool ForceGearEmpty(Player* requester, std::string& response);
         bool ApplyFriendLevel(uint32 level);
         uint8 EquippedBagSlots() const;
+        Item* FindBestTradeItem(const std::string& fragment) const;
+        bool TradeMatchingItem(Player* requester, const std::string& fragment, std::string& response);
         void MaybeProposeTownChores(const FriendSituation& situation);
         void ClearProposal();
         bool ExecuteTaskIntent(FriendIntent intent, const FriendSituation& situation);
