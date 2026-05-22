@@ -29,7 +29,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v36";
+    const char* FRIEND_BOT_VERSION = "v37";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -1791,6 +1791,7 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
             return ExecuteTaskIntent(intent, situation);
 
         case FriendIntent::DealDamage:
+            GetDamageTarget(situation, true);
             if (ShouldOpportunisticHeal(situation) && TryCatalogHeal(situation, "friend top off"))
                 return true;
             if (TryImproveRangedCombatSpacing(situation, "ranged spacing"))
@@ -1813,6 +1814,8 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
             if (PrefersMeleeDamage(situation) && MoveToDamageTarget(situation, "move to melee"))
                 return true;
             if (TryActions(DamageActions(situation), "friend fallback damage"))
+                return true;
+            if (MoveToDamageTarget(situation, "move to attack"))
                 return true;
             if (situation.partyInCombat && situation.leaderSafe && situation.leaderDistance > SoftLeashDistance(situation))
                 return MoveNearLeader(situation, "move near leader", false);
@@ -2543,6 +2546,10 @@ void FriendBotController::SetCurrentDamageTarget(Unit* target, const std::string
     ai->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(target);
     ai->GetBot()->SetSelectionGuid(target->GetObjectGuid());
     lastTargetReason = reason;
+    lastSituation.hasTarget = true;
+    lastSituation.targetName = target->GetName();
+    lastSituation.targetDistance = sServerFacade.GetDistance2d(ai->GetBot(), target);
+    lastSituation.targetIsElite = IsEliteTarget(ai, target);
 }
 
 std::vector<Unit*> FriendBotController::GetPartyTargets() const
@@ -2716,6 +2723,10 @@ bool FriendBotController::TryReachAbilityTarget(const FriendAbility& ability, Un
 
 bool FriendBotController::TryFreeDamage(const FriendSituation& situation, const std::string& source)
 {
+    Unit* target = GetDamageTarget(situation, true);
+    if (!IsHostileTarget(ai, target))
+        return false;
+
     if (TryDruidCombatForm(situation, source))
         return true;
 
@@ -2725,10 +2736,13 @@ bool FriendBotController::TryFreeDamage(const FriendSituation& situation, const 
             return true;
     }
 
-    if (PrefersMeleeDamage(situation) && MoveToDamageTarget(situation, "move to melee"))
+    if (TryAction("shoot", source) == FriendExecutionResult::Done)
         return true;
 
-    return TryActions({ "shoot", "melee", "attack" }, source);
+    if (MoveToDamageTarget(situation, "move to melee"))
+        return true;
+
+    return TryActions({ "melee", "attack" }, source);
 }
 
 bool FriendBotController::TryFallbackCombat(const FriendSituation& situation, const std::string& source)
