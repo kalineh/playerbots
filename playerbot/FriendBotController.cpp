@@ -2629,20 +2629,27 @@ bool FriendBotController::WantsTownProgression(const FriendSituation& situation)
     if (mode == FriendMode::Dungeon || situation.inDungeon)
         return false;
 
-    if (command != FriendCommand::Shop && mode != FriendMode::Solo)
+    const bool alreadyTownReady = situation.inTown || situation.nearbyVendor || situation.nearbyRepair;
+    const uint8 levelGap = situation.leaderLevel > situation.botLevel ?
+        situation.leaderLevel - situation.botLevel : 0;
+    const bool majorLevelGap = levelGap >= 3;
+    const bool manualShop = command == FriendCommand::Shop;
+    const bool soloAutonomy = mode == FriendMode::Solo;
+
+    if (!manualShop && !soloAutonomy)
         return false;
 
     const time_t now = time(nullptr);
-    if (situation.leaderLevel && situation.botLevel < situation.leaderLevel && now >= nextSoftLevelCatchupAt)
+    if (levelGap > 0 && now >= nextSoftLevelCatchupAt && (alreadyTownReady || manualShop || majorLevelGap))
         return true;
 
-    if (situation.shouldTrain && now >= nextSoftTrainingAt)
+    if (situation.shouldTrain && now >= nextSoftTrainingAt && (alreadyTownReady || manualShop))
         return true;
 
-    if (situation.shouldUpgradeBags && now >= nextSoftBagUpgradeAt)
+    if (situation.shouldUpgradeBags && now >= nextSoftBagUpgradeAt && (alreadyTownReady || manualShop))
         return true;
 
-    return situation.shouldUpgradeGear && now >= nextSoftGearUpgradeAt;
+    return situation.shouldUpgradeGear && now >= nextSoftGearUpgradeAt && (alreadyTownReady || manualShop);
 }
 
 bool FriendBotController::TrySoftTownProgression(const FriendSituation& situation)
