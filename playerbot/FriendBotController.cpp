@@ -25,7 +25,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v2";
+    const char* FRIEND_BOT_VERSION = "v3";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -59,6 +59,7 @@ namespace
     const float FRIEND_HEADING_MAX_STEP = 70.0f;
     const uint8 FRIEND_HEADING_MIN_CONFIDENCE = 35;
     const float FRIEND_IDLE_MOVE_HOSTILE_BUFFER = 12.0f;
+    const int32 FRIEND_ABILITY_TOP_ROLL_WINDOW = 25;
 
     uint32 FriendVendorNpcFlags()
     {
@@ -73,6 +74,47 @@ namespace
     {
         for (const char* name : names)
             actions.push_back(name);
+    }
+
+    template <typename Candidate>
+    void OrderWeightedTopCandidates(std::vector<Candidate>& candidates)
+    {
+        std::sort(candidates.begin(), candidates.end(), [](const Candidate& left, const Candidate& right)
+        {
+            return left.score > right.score;
+        });
+
+        if (candidates.size() < 2 || candidates.front().score <= 0)
+            return;
+
+        const int32 cutoff = std::max<int32>(1, candidates.front().score - FRIEND_ABILITY_TOP_ROLL_WINDOW);
+        uint32 topCount = 0;
+        uint32 totalWeight = 0;
+        for (const Candidate& candidate : candidates)
+        {
+            if (candidate.score < cutoff)
+                break;
+
+            ++topCount;
+            totalWeight += static_cast<uint32>(std::max<int32>(1, candidate.score));
+        }
+
+        if (topCount < 2 || !totalWeight)
+            return;
+
+        uint32 roll = urand(1, totalWeight);
+        uint32 selected = 0;
+        for (; selected < topCount; ++selected)
+        {
+            uint32 weight = static_cast<uint32>(std::max<int32>(1, candidates[selected].score));
+            if (roll <= weight)
+                break;
+
+            roll -= weight;
+        }
+
+        if (selected > 0 && selected < candidates.size())
+            std::rotate(candidates.begin(), candidates.begin() + selected, candidates.begin() + selected + 1);
     }
 
     bool IsEliteTarget(PlayerbotAI* ai, Unit* target)
@@ -154,6 +196,7 @@ namespace
             action == "idle orbit" ||
             action == "recover position" ||
             action == "move to travel target" ||
+            action == "stand near travel target" ||
             action == "move to loot" ||
             action == "move to melee" ||
             action == "ranged spacing" ||
@@ -905,10 +948,18 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
         (situation.botHealth < sPlayerbotAIConfig.almostFullHealth ||
          situation.botHealthDelta <= FRIEND_HEALTH_DROP_NOTICE);
 
-    if (situation.botHealth < sPlayerbotAIConfig.lowHealth ||
+    const bool selfHealthPressure = situation.botHealth < sPlayerbotAIConfig.lowHealth ||
         situation.botHealthDelta <= FRIEND_HEALTH_DROP_DANGER ||
-        (situation.botHealth < sPlayerbotAIConfig.mediumHealth && situation.botHealthDelta <= FRIEND_HEALTH_DROP_NOTICE))
+        (situation.botHealth < sPlayerbotAIConfig.mediumHealth && situation.botHealthDelta <= FRIEND_HEALTH_DROP_NOTICE);
+    const bool selfActivelyThreatened = situation.botHasThreat || situation.hasAttackers ||
+        situation.attackersTargetingMeCount > 0;
+    if (selfHealthPressure)
+    {
+        if (CanClassHeal() && !selfActivelyThreatened)
+            return FriendIntent::SavePartyMember;
+
         return FriendIntent::SaveSelf;
+    }
 
     if (fragileThreat)
         return FriendIntent::SaveSelf;
@@ -2302,6 +2353,16 @@ bool FriendBotController::TryCastAbility(const FriendAbility& ability, Unit* tar
     if (duplicateAuraSensitive && HasEquivalentAura(ability, target))
         return false;
 
+    Player* bot = ai->GetBot();
+    if (bot->getClass() == CLASS_DRUID &&
+        (ability.Has(FRIEND_ABILITY_HEAL) || ability.Has(FRIEND_ABILITY_CURE) ||
+         ability.Has(FRIEND_ABILITY_BUFF_CORE) || ability.Has(FRIEND_ABILITY_BUFF_SITUATIONAL)) &&
+        ai->HasAnyAuraOf(bot, "cat form", "bear form", "dire bear form", "travel form", "aquatic form",
+            "flight form", "swift flight form", "moonkin form", "tree of life", NULL))
+    {
+        return TryAction("caster form", source) == FriendExecutionResult::Done;
+    }
+
     if (IsHostileTarget(ai, target) && ability.Has(FRIEND_ABILITY_MELEE))
     {
         const float desiredDistance = std::max(sPlayerbotAIConfig.meleeDistance, sPlayerbotAIConfig.contactDistance);
@@ -2476,10 +2537,7 @@ bool FriendBotController::TryCatalogDamage(const FriendSituation& situation, con
             candidates.push_back({ &ability, score });
     }
 
-    std::sort(candidates.begin(), candidates.end(), [](const Candidate& left, const Candidate& right)
-    {
-        return left.score > right.score;
-    });
+    OrderWeightedTopCandidates(candidates);
 
     for (const Candidate& candidate : candidates)
     {
@@ -2554,10 +2612,7 @@ bool FriendBotController::TryCatalogHeal(const FriendSituation& situation, const
             candidates.push_back({ &ability, score });
     }
 
-    std::sort(candidates.begin(), candidates.end(), [](const Candidate& left, const Candidate& right)
-    {
-        return left.score > right.score;
-    });
+    OrderWeightedTopCandidates(candidates);
 
     for (const Candidate& candidate : candidates)
     {
@@ -2681,10 +2736,7 @@ bool FriendBotController::TryCatalogCrowdControl(const FriendSituation& situatio
             candidates.push_back({ &ability, target, reason, score });
     }
 
-    std::sort(candidates.begin(), candidates.end(), [](const Candidate& left, const Candidate& right)
-    {
-        return left.score > right.score;
-    });
+    OrderWeightedTopCandidates(candidates);
 
     for (const Candidate& candidate : candidates)
     {
@@ -2807,6 +2859,22 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
     if (!IsSafeForTownChores(situation))
         return false;
 
+    const bool serviceTravelTarget = resupplyTravelRequested && situation.travelTargetWorking &&
+        (situation.travelTargetPurpose == FRIEND_VENDOR_TRAVEL_PURPOSE ||
+         situation.travelTargetPurpose == FRIEND_REPAIR_TRAVEL_PURPOSE);
+    const bool expectedServiceNearby = situation.travelTargetPurpose == FRIEND_REPAIR_TRAVEL_PURPOSE ?
+        situation.nearbyRepair : situation.nearbyVendor;
+    if (serviceTravelTarget && !expectedServiceNearby)
+    {
+        resupplyTravelRequested = false;
+        if (TryAction("reset travel target", "friend resupply", 0, ai->GetBot()) == FriendExecutionResult::Done)
+            return true;
+
+        SetResult(lastIntent, "shop blocked:no service npc", FriendExecutionResult::BlockedNotUseful);
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        return true;
+    }
+
     if (situation.nearbyRepair && situation.shouldRepair &&
         TryAction("repair", "friend resupply") == FriendExecutionResult::Done)
     {
@@ -2888,14 +2956,23 @@ bool FriendBotController::TryTravelForResupply(const FriendSituation& situation)
     {
         SetResult(lastIntent, "shop blocked:travel busy", FriendExecutionResult::BlockedNotUseful);
         ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
-        return false;
+        return true;
     }
 
     if ((situation.travelTargetPreparing || situation.travelTargetTraveling || situation.travelTargetActive) &&
         !resupplyTravelRequested)
     {
-        if (TryAction("reset travel target", "friend resupply", 0, ai->GetBot()) == FriendExecutionResult::Done)
+        FriendExecutionResult result = TryAction("reset travel target", "friend resupply", 0, ai->GetBot());
+        if (result == FriendExecutionResult::Done)
             return true;
+
+        if (result != FriendExecutionResult::BlockedNoAction)
+        {
+            ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+            return true;
+        }
+
+        return false;
     }
 
     if (situation.travelTargetPreparing && resupplyTravelRequested)
@@ -2927,7 +3004,8 @@ bool FriendBotController::TryTravelForResupply(const FriendSituation& situation)
 
     uint32 purpose = (situation.shouldRepair && !situation.nearbyRepair) ?
         FRIEND_REPAIR_TRAVEL_PURPOSE : FRIEND_VENDOR_TRAVEL_PURPOSE;
-    if (TryAction("request travel target::" + std::to_string(purpose), "friend resupply", 0, ai->GetBot()) == FriendExecutionResult::Done)
+    FriendExecutionResult result = TryAction("request travel target::" + std::to_string(purpose), "friend resupply", 0, ai->GetBot());
+    if (result == FriendExecutionResult::Done)
     {
         resupplyTravelRequested = true;
         MaybeSayActivity(situation, "resupply-travel", {
@@ -2937,12 +3015,17 @@ bool FriendBotController::TryTravelForResupply(const FriendSituation& situation)
         return true;
     }
 
+    if (result != FriendExecutionResult::BlockedNoAction)
+    {
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        return true;
+    }
+
     return false;
 }
 
 bool FriendBotController::MoveToFriendTravelTarget(const FriendSituation& situation)
 {
-    (void)situation;
     if (!ai || !ai->GetBot() || !ai->GetAiObjectContext() || !ai->CanMove())
         return false;
 
@@ -2965,6 +3048,36 @@ bool FriendBotController::MoveToFriendTravelTarget(const FriendSituation& situat
         return false;
 
     WorldPosition from(bot);
+    const bool serviceTravelTarget = situation.travelTargetPurpose == FRIEND_VENDOR_TRAVEL_PURPOSE ||
+        situation.travelTargetPurpose == FRIEND_REPAIR_TRAVEL_PURPOSE;
+    if (serviceTravelTarget && from.distance(destination) < 1.25f && !sServerFacade.isMoving(bot))
+    {
+        const float approachDistance = std::min<float>(INTERACTION_DISTANCE * 0.75f,
+            std::max<float>(1.8f, target->GetDestination()->GetRadiusMin() * 0.6f));
+        float angle = std::atan2(bot->GetPositionY() - destination.getY(), bot->GetPositionX() - destination.getX());
+        if (std::fabs(bot->GetPositionX() - destination.getX()) < 0.05f &&
+            std::fabs(bot->GetPositionY() - destination.getY()) < 0.05f)
+            angle = static_cast<float>(urand(0, 6283)) / 1000.0f;
+
+        float x = destination.getX() + std::cos(angle) * approachDistance;
+        float y = destination.getY() + std::sin(angle) * approachDistance;
+        float z = destination.getZ();
+        if (NormalizeFriendMovePosition(x, y, z))
+        {
+            WorldPosition standPoint(bot->GetMapId(), x, y, z);
+            if (from.canPathTo(standPoint, bot) && bot->IsWithinLOS(x, y, z + bot->GetCollisionHeight(), true))
+            {
+                ClearFriendMovement(false);
+                if (MoveFriendPoint(x, y, z))
+                {
+                    SetResult(lastIntent, "stand near travel target", FriendExecutionResult::Done);
+                    ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
+                    return true;
+                }
+            }
+        }
+    }
+
     if (from.distance(destination) <= INTERACTION_DISTANCE)
     {
         target->SetStatus(TravelStatus::TRAVEL_STATUS_WORK);
@@ -3891,8 +4004,15 @@ bool FriendBotController::ExecuteIdleTravelGoal(const FriendSituation& situation
     if ((situation.travelTargetPreparing || situation.travelTargetTraveling || situation.travelTargetActive) &&
         (!idleTravelRequested || idleTravelPurpose != purpose))
     {
-        if (TryAction("reset travel target", "friend idle", 0, ai->GetBot()) == FriendExecutionResult::Done)
+        FriendExecutionResult result = TryAction("reset travel target", "friend idle", 0, ai->GetBot());
+        if (result == FriendExecutionResult::Done)
             return true;
+        if (result != FriendExecutionResult::BlockedNoAction)
+        {
+            ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+            return true;
+        }
+
         return false;
     }
 
@@ -3923,11 +4043,18 @@ bool FriendBotController::ExecuteIdleTravelGoal(const FriendSituation& situation
         return TryAction("move to travel target", "friend idle", 0, ai->GetBot()) == FriendExecutionResult::Done;
     }
 
-    if (TryAction("request travel target::" + std::to_string(purpose), "friend idle", 0, ai->GetBot()) == FriendExecutionResult::Done)
+    FriendExecutionResult result = TryAction("request travel target::" + std::to_string(purpose), "friend idle", 0, ai->GetBot());
+    if (result == FriendExecutionResult::Done)
     {
         idleTravelRequested = true;
         idleTravelPurpose = purpose;
         MaybeSayActivity(situation, action, lines, 70, 90);
+        return true;
+    }
+
+    if (result != FriendExecutionResult::BlockedNoAction)
+    {
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
         return true;
     }
 
