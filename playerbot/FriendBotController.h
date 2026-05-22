@@ -322,6 +322,7 @@ namespace ai
         FriendCommand command = FriendCommand::None;
         FriendVerbosity verbosity = FriendVerbosity::Silent;
         FriendIntent lastIntent = FriendIntent::FollowOrIdle;
+        FriendIntent lastBlockedIntent = FriendIntent::FollowOrIdle;
         FriendExecutionResult lastResult = FriendExecutionResult::None;
         FriendProposal pendingProposal = FriendProposal::None;
         FriendSituation lastSituation;
@@ -335,6 +336,7 @@ namespace ai
         time_t manualAttackUntil = 0;
         time_t manualHealUntil = 0;
         time_t manualBuffUntil = 0;
+        time_t lastBlockedIntentUntil = 0;
         ObjectGuid manualHealGuid;
         FriendTaskType executionTask = FriendTaskType::None;
         time_t executionTaskUntil = 0;

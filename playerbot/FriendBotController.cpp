@@ -26,7 +26,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v16";
+    const char* FRIEND_BOT_VERSION = "v17";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -438,6 +438,8 @@ void FriendBotController::Reset()
     manualAttackUntil = 0;
     manualHealUntil = 0;
     manualBuffUntil = 0;
+    lastBlockedIntent = FriendIntent::FollowOrIdle;
+    lastBlockedIntentUntil = 0;
     manualHealGuid = ObjectGuid();
     executionTask = FriendTaskType::None;
     executionTaskUntil = 0;
@@ -517,6 +519,8 @@ bool FriendBotController::HandleCommand(const std::string& rawCommand, Player* r
         manualAttackUntil = 0;
         manualHealUntil = 0;
         manualBuffUntil = 0;
+        lastBlockedIntent = FriendIntent::FollowOrIdle;
+        lastBlockedIntentUntil = 0;
         manualHealGuid = ObjectGuid();
         executionTask = FriendTaskType::None;
         executionTaskUntil = 0;
@@ -828,6 +832,9 @@ std::string FriendBotController::FormatReport() const
     AppendTravelSummary(out, lastSituation);
     if (nextResupplyAttemptAt > time(nullptr))
         out << ", resupplyCd=" << static_cast<uint32>(nextResupplyAttemptAt - time(nullptr)) << "s";
+    if (lastBlockedIntentUntil > time(nullptr))
+        out << ", blocked=" << IntentName(lastBlockedIntent) << ":"
+            << static_cast<uint32>(lastBlockedIntentUntil - time(nullptr)) << "s";
     if (lastSituation.nearestHostileGuid)
         out << ", nearHostile=" << static_cast<uint32>(lastSituation.nearestHostileDistance);
     out << ", abilities=" << static_cast<uint32>(abilityCatalog.GetAbilities().size());
@@ -1189,9 +1196,13 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
     if (ShouldLootNow(situation, localPartyInCombat))
         return FriendIntent::LootNearby;
 
-    const bool resupplyInProgress = taskTravelRequested ||
-        situation.travelTargetPreparing || situation.travelTargetTraveling ||
-        (situation.travelTargetActive && !situation.travelTargetWorking);
+    const bool serviceTravelTarget = taskTravelPurpose == FRIEND_VENDOR_TRAVEL_PURPOSE ||
+        taskTravelPurpose == FRIEND_REPAIR_TRAVEL_PURPOSE ||
+        situation.travelTargetPurpose == FRIEND_VENDOR_TRAVEL_PURPOSE ||
+        situation.travelTargetPurpose == FRIEND_REPAIR_TRAVEL_PURPOSE;
+    const bool resupplyInProgress = serviceTravelTarget &&
+        (taskTravelRequested || situation.travelTargetPreparing || situation.travelTargetTraveling ||
+         (situation.travelTargetActive && !situation.travelTargetWorking));
     const bool townAccessNearby = situation.inTown || situation.nearbyVendor || situation.nearbyRepair;
     const bool relaxedOutOfCombat = !situation.inCombat && !localPartyInCombat &&
         (!partyNearby || situation.lowestPartyHealth >= FRIEND_HEAL_TOP_OFF_HEALTH);
@@ -1217,7 +1228,22 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
         auto add = [&](FriendIntent intent, int32 score)
         {
             if (score > 0)
+            {
+                const bool explicitCommandIntent = command == FriendCommand::Shop && intent == FriendIntent::Resupply;
+                if (!explicitCommandIntent && lastBlockedIntentUntil > now && lastBlockedIntent == intent)
+                    return;
+
+                for (WeightedIntent& candidate : candidates)
+                {
+                    if (candidate.intent == intent)
+                    {
+                        candidate.score += score;
+                        return;
+                    }
+                }
+
                 candidates.push_back({ intent, score });
+            }
         };
 
         const uint32 personality = ai && ai->GetBot() ? ai->GetBot()->GetObjectGuid().GetCounter() : 0;
@@ -3375,6 +3401,7 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
     if (serviceTravelTarget && !expectedServiceNearby)
     {
         taskTravelRequested = false;
+        taskTravelPurpose = 0;
         if (command != FriendCommand::Shop)
             nextResupplyAttemptAt = now + FRIEND_RESUPPLY_RETRY_COOLDOWN;
 
@@ -3439,6 +3466,7 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
     if (serviceTravelTarget && expectedServiceNearby && NeedsTownChores(situation))
     {
         taskTravelRequested = false;
+        taskTravelPurpose = 0;
         if (command != FriendCommand::Shop)
             nextResupplyAttemptAt = now + FRIEND_RESUPPLY_RETRY_COOLDOWN;
 
@@ -3460,6 +3488,7 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
     if (serviceTravelTarget && expectedServiceNearby && !NeedsTownChores(situation))
     {
         taskTravelRequested = false;
+        taskTravelPurpose = 0;
         ClearFriendTravelTarget();
         if (command == FriendCommand::Shop)
         {
@@ -3484,6 +3513,7 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
         if (blocked)
         {
             taskTravelRequested = false;
+            taskTravelPurpose = 0;
             ClearFriendTravelTarget();
             command = FriendCommand::None;
             ClearExecutionState();
@@ -3494,6 +3524,7 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
 
         command = FriendCommand::None;
         taskTravelRequested = false;
+        taskTravelPurpose = 0;
         ClearFriendTravelTarget();
         ClearExecutionState();
         SetResult(lastIntent, "shop done", FriendExecutionResult::Done);
@@ -3522,7 +3553,10 @@ bool FriendBotController::TryTravelForResupply(const FriendSituation& situation)
     if (situation.travelTargetPreparing && !taskTravelRequested)
     {
         if (existingServiceTarget && NeedsTownChores(situation))
+        {
             taskTravelRequested = true;
+            taskTravelPurpose = situation.travelTargetPurpose;
+        }
         else
         {
             SetResult(lastIntent, "shop blocked:travel busy", FriendExecutionResult::BlockedNotUseful);
@@ -3535,7 +3569,10 @@ bool FriendBotController::TryTravelForResupply(const FriendSituation& situation)
         !taskTravelRequested)
     {
         if (existingServiceTarget && NeedsTownChores(situation))
+        {
             taskTravelRequested = true;
+            taskTravelPurpose = situation.travelTargetPurpose;
+        }
         else
         {
             ClearFriendTravelTarget();
@@ -3565,6 +3602,7 @@ bool FriendBotController::TryTravelForResupply(const FriendSituation& situation)
     if (situation.travelTargetWorking && taskTravelRequested)
     {
         taskTravelRequested = false;
+        taskTravelPurpose = 0;
         if (command != FriendCommand::Shop)
             nextResupplyAttemptAt = time(nullptr) + FRIEND_RESUPPLY_RETRY_COOLDOWN;
 
@@ -3602,6 +3640,7 @@ bool FriendBotController::TryTravelForResupply(const FriendSituation& situation)
     if (result == FriendExecutionResult::Done)
     {
         taskTravelRequested = true;
+        taskTravelPurpose = purpose;
         MaybeSayActivity(situation, "resupply-travel", {
             "I'm going to find a vendor.",
             "Going to handle supplies."
@@ -4321,9 +4360,7 @@ bool FriendBotController::ExecuteTaskIntent(FriendIntent intent, const FriendSit
 
     if (!IsSafeForTaskActivity(situation))
     {
-        executionTask = FriendTaskType::None;
-        executionTaskUntil = 0;
-        executionNextActionAt = 0;
+        ClearExecutionState();
 
         if (situation.leaderSafe && situation.leaderDistance > PreferredLeaderDistance(situation))
             return MoveInLeaderOrbit(situation, "move near leader", false);
@@ -4372,6 +4409,10 @@ bool FriendBotController::IsSafeForTaskActivity(const FriendSituation& situation
 FriendTaskType FriendBotController::SelectTaskForIntent(FriendIntent intent, const FriendSituation& situation)
 {
     const time_t now = time(nullptr);
+    const bool explicitCommandIntent = command == FriendCommand::Shop && intent == FriendIntent::Resupply;
+    if (!explicitCommandIntent && lastBlockedIntentUntil > now && lastBlockedIntent == intent)
+        return FriendTaskType::None;
+
     if (executionTask != FriendTaskType::None && executionTaskUntil > now &&
         IntentForTask(executionTask) == intent)
         return executionTask;
@@ -4575,9 +4616,14 @@ bool FriendBotController::ExecuteCurrentTask(const FriendSituation& situation)
     }
 
     FriendTaskType failedGoal = executionTask;
-    executionTask = FriendTaskType::None;
-    executionTaskUntil = 0;
+    FriendIntent failedIntent = IntentForTask(failedGoal);
+    ClearExecutionState();
     executionNextActionAt = now + urand(4, 10);
+    if (IsActiveTask(failedGoal))
+    {
+        lastBlockedIntent = failedIntent;
+        lastBlockedIntentUntil = now + urand(12, 28);
+    }
 
     if (IsActiveTask(failedGoal))
     {
