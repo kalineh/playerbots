@@ -237,6 +237,7 @@ namespace ai
         bool ShouldConserveDamageMana(const FriendSituation& situation) const;
         bool IsLowPressureFight(const FriendSituation& situation) const;
         int32 ManaSpendScorePenalty(const FriendSituation& situation, const FriendAbility& ability) const;
+        int32 ThreatCautionScore(const FriendSituation& situation, Unit* target) const;
         bool ShouldUseLegacySupportActions(const FriendSituation& situation) const;
         Unit* GetDamageTarget(const FriendSituation& situation, bool prepare);
         Unit* SelectDamageTarget(const FriendSituation& situation, bool allowCrowdControlFallback, std::string& reason);

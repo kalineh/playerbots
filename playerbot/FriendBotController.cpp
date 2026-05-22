@@ -15,6 +15,7 @@
 #include "strategy/values/ItemUsageValue.h"
 #include "strategy/values/LootValues.h"
 #include "strategy/values/PossibleAttackTargetsValue.h"
+#include "strategy/values/ThreatValues.h"
 #include "strategy/values/TravelValues.h"
 
 #include <algorithm>
@@ -28,7 +29,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v33";
+    const char* FRIEND_BOT_VERSION = "v34";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -1796,6 +1797,12 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
                 return true;
             if (GetCombatStyle(situation) == FriendCombatStyle::Dry && TryFreeDamage(situation, "friend free damage"))
                 return true;
+            if (Unit* threatTarget = GetDamageTarget(situation, true))
+            {
+                if (ThreatCautionScore(situation, threatTarget) >= 55 &&
+                    TryFreeDamage(situation, "friend low threat"))
+                    return true;
+            }
             if (ai && ai->GetBot() && ai->GetBot()->getClass() == CLASS_DRUID &&
                 (ShouldConserveDamageMana(situation) || situation.botHasThreat ||
                  situation.botMana < sPlayerbotAIConfig.mediumMana) &&
@@ -3264,6 +3271,62 @@ int32 FriendBotController::ManaSpendScorePenalty(const FriendSituation& situatio
     return extraPenalty;
 }
 
+int32 FriendBotController::ThreatCautionScore(const FriendSituation& situation, Unit* target) const
+{
+    if (!ai || !ai->GetBot() || !target || situation.botHasThreat || situation.tankish)
+        return 0;
+
+    Player* bot = ai->GetBot();
+    Unit* victim = target->GetVictim();
+    Player* victimPlayer = dynamic_cast<Player*>(victim);
+    if (!victimPlayer || victimPlayer == bot || !IsFriendlyTarget(ai, victimPlayer))
+        return 0;
+
+    if (situation.vulnerablePartyHasThreat || situation.healerPartyHasThreat)
+        return 0;
+
+    const uint8 targetHealth = HealthPercent(ai, target);
+    if (targetHealth < 20)
+        return 0;
+
+    const uint8 victimHealthPct = HealthPercent(ai, victimPlayer);
+    if (victimHealthPct < sPlayerbotAIConfig.mediumHealth)
+        return 0;
+
+    const uint32 botHealth = bot->GetHealth();
+    const uint32 botMaxHealth = bot->GetMaxHealth();
+    const uint32 victimHealth = victimPlayer->GetHealth();
+    const uint32 victimMaxHealth = victimPlayer->GetMaxHealth();
+    const bool victimSturdier =
+        (botHealth && victimHealth && static_cast<uint64>(victimHealth) * 100 >= static_cast<uint64>(botHealth) * 115) ||
+        (botMaxHealth && victimMaxHealth && static_cast<uint64>(victimMaxHealth) * 100 >= static_cast<uint64>(botMaxHealth) * 120);
+    if (!victimSturdier)
+        return 0;
+
+    const float botThreat = ThreatValue::GetThreat(bot, target);
+    const float victimThreat = ThreatValue::GetThreat(victimPlayer, target);
+    if (botThreat <= 0.0f || victimThreat <= 0.0f)
+        return 0;
+
+    int32 score = 0;
+    const float percent = botThreat * 100.0f / victimThreat;
+    if (percent >= 90.0f)
+        score += 70;
+    else if (percent >= 70.0f)
+        score += 45;
+    else if (percent >= 50.0f)
+        score += 20;
+
+    if (situation.ranged || situation.healerish)
+        score += 10;
+    if (situation.botHealth < sPlayerbotAIConfig.mediumHealth)
+        score += 15;
+    if (targetHealth > 60)
+        score += 10;
+
+    return std::max<int32>(0, std::min<int32>(100, score));
+}
+
 bool FriendBotController::ShouldUseLegacySupportActions(const FriendSituation& situation) const
 {
     return !situation.inCombat && !situation.partyInCombat &&
@@ -3437,6 +3500,7 @@ bool FriendBotController::TryCatalogDamage(const FriendSituation& situation, con
         (ai->GetBot()->getClass() == CLASS_ROGUE || ai->GetBot()->getClass() == CLASS_DRUID);
     const uint8 comboPoints = usesComboPoints && target->GetObjectGuid() == ai->GetBot()->GetComboTargetGuid() ?
         ai->GetBot()->GetComboPoints() : 0;
+    const int32 threatCaution = ThreatCautionScore(situation, target);
 
     for (const FriendAbility& ability : abilityCatalog.GetAbilities())
     {
@@ -3488,6 +3552,19 @@ bool FriendBotController::TryCatalogDamage(const FriendSituation& situation, con
             score += 20;
         if (threatPeel && ability.Has(FRIEND_ABILITY_DOT) && !ability.Has(FRIEND_ABILITY_THREAT))
             score -= 25;
+        if (threatCaution > 0 && !ability.Has(FRIEND_ABILITY_INTERRUPT) && !threatPeel)
+        {
+            if (ability.Has(FRIEND_ABILITY_THREAT))
+                score -= threatCaution + 50;
+            if (ability.Has(FRIEND_ABILITY_DAMAGE_COOLDOWN))
+                score -= threatCaution + 25;
+            if (ability.Has(FRIEND_ABILITY_AOE))
+                score -= threatCaution / 2;
+            if (ability.Has(FRIEND_ABILITY_DIRECT_DAMAGE))
+                score -= threatCaution / 2;
+            if (ability.Has(FRIEND_ABILITY_DOT))
+                score -= threatCaution / 3;
+        }
         if (usesComboPoints)
         {
             const bool comboSpender = ability.Has(FRIEND_ABILITY_COMBO_SPENDER);
