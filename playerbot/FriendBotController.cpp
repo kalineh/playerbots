@@ -26,7 +26,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v18";
+    const char* FRIEND_BOT_VERSION = "v19";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -78,6 +78,45 @@ namespace
     {
         for (const char* name : names)
             actions.push_back(name);
+    }
+
+    bool IsServiceTravelPurpose(uint32 purpose)
+    {
+        return purpose == FRIEND_VENDOR_TRAVEL_PURPOSE ||
+            purpose == FRIEND_REPAIR_TRAVEL_PURPOSE;
+    }
+
+    void ReadFriendTravelSnapshot(Player* bot, TravelTarget* travelTarget, FriendSituation& situation)
+    {
+        if (!bot || !travelTarget)
+            return;
+
+        const TravelStatus status = travelTarget->GetStatus();
+        situation.travelTargetStatus = static_cast<uint8>(status);
+        situation.travelTargetActive = travelTarget->IsActive();
+        situation.travelTargetPreparing = status == TravelStatus::TRAVEL_STATUS_PREPARE;
+        situation.travelTargetTraveling = status == TravelStatus::TRAVEL_STATUS_READY ||
+            status == TravelStatus::TRAVEL_STATUS_TRAVEL;
+        situation.travelTargetWorking = status == TravelStatus::TRAVEL_STATUS_WORK;
+
+        if (travelTarget->GetDestination())
+        {
+            situation.travelTargetPurpose = static_cast<uint32>(travelTarget->GetDestination()->GetPurpose());
+            situation.travelTargetName = travelTarget->GetDestination()->GetTitle();
+        }
+
+        WorldPosition* position = travelTarget->GetPosition();
+        if (!position)
+            return;
+
+        situation.travelTargetSameMap = position->getMapId() == bot->GetMapId();
+        if (!situation.travelTargetSameMap)
+            return;
+
+        situation.travelTargetDistanceKnown = true;
+        situation.travelTargetDistance = static_cast<uint32>(position->distance(bot));
+        if (situation.travelTargetName.empty())
+            situation.travelTargetName = position->getAreaName(true, true);
     }
 
     template <typename Candidate>
@@ -313,12 +352,18 @@ namespace
 
     const char* TravelStateName(const FriendSituation& situation)
     {
-        if (situation.travelTargetWorking)
-            return "work";
-        if (situation.travelTargetTraveling)
-            return "move";
-        if (situation.travelTargetPreparing)
-            return "prep";
+        switch (static_cast<TravelStatus>(situation.travelTargetStatus))
+        {
+            case TravelStatus::TRAVEL_STATUS_PREPARE: return "prep";
+            case TravelStatus::TRAVEL_STATUS_READY: return "ready";
+            case TravelStatus::TRAVEL_STATUS_TRAVEL: return "move";
+            case TravelStatus::TRAVEL_STATUS_WORK: return "work";
+            case TravelStatus::TRAVEL_STATUS_COOLDOWN: return "cooldown";
+            case TravelStatus::TRAVEL_STATUS_EXPIRED: return "expired";
+            case TravelStatus::TRAVEL_STATUS_NONE: return "none";
+            case TravelStatus::MAX_TRAVEL_STATUS: return "unknown";
+        }
+
         return "active";
     }
 
@@ -333,6 +378,8 @@ namespace
             out << ":" << situation.travelTargetName;
         if (situation.travelTargetDistanceKnown)
             out << "@" << situation.travelTargetDistance << "y";
+        else if (situation.travelTargetPurpose)
+            out << " purpose=" << situation.travelTargetPurpose;
     }
 
     bool IsFriendMovementAction(const std::string& action)
@@ -890,28 +937,7 @@ FriendSituation FriendBotController::BuildSituation()
         situation.balance = GetContextValue<uint8>(context, "balance", 100);
         situation.bagSpace = GetContextValue<uint8>(context, "bag space", 0);
         situation.durability = GetContextValue<uint8>(context, "durability inventory", 100);
-        TravelTarget* travelTarget = context->GetValue<TravelTarget*>("travel target")->Get();
-        if (travelTarget)
-        {
-            const TravelStatus travelStatus = travelTarget->GetStatus();
-            situation.travelTargetActive = travelTarget->IsActive();
-            situation.travelTargetPreparing = travelStatus == TravelStatus::TRAVEL_STATUS_PREPARE;
-            situation.travelTargetTraveling = travelStatus == TravelStatus::TRAVEL_STATUS_READY ||
-                travelStatus == TravelStatus::TRAVEL_STATUS_TRAVEL;
-            situation.travelTargetWorking = travelStatus == TravelStatus::TRAVEL_STATUS_WORK;
-            if (travelTarget->GetDestination())
-            {
-                situation.travelTargetPurpose = static_cast<uint32>(travelTarget->GetDestination()->GetPurpose());
-                situation.travelTargetName = travelTarget->GetDestination()->GetTitle();
-            }
-            if (travelTarget->GetPosition() && travelTarget->GetPosition()->getMapId() == bot->GetMapId())
-            {
-                situation.travelTargetDistanceKnown = true;
-                situation.travelTargetDistance = static_cast<uint32>(travelTarget->GetPosition()->distance(bot));
-                if (situation.travelTargetName.empty())
-                    situation.travelTargetName = travelTarget->GetPosition()->getAreaName(true, true);
-            }
-        }
+        ReadFriendTravelSnapshot(bot, context->GetValue<TravelTarget*>("travel target")->Get(), situation);
 
         uint32 vendorItems = CountBagItemsByQualifier(ai, "vendor");
         uint32 trashItems = CountBagItemsByQualifier(ai, "gray");
@@ -1208,10 +1234,8 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
     if (ShouldLootNow(situation, localPartyInCombat))
         return FriendIntent::LootNearby;
 
-    const bool serviceTravelTarget = taskTravelPurpose == FRIEND_VENDOR_TRAVEL_PURPOSE ||
-        taskTravelPurpose == FRIEND_REPAIR_TRAVEL_PURPOSE ||
-        situation.travelTargetPurpose == FRIEND_VENDOR_TRAVEL_PURPOSE ||
-        situation.travelTargetPurpose == FRIEND_REPAIR_TRAVEL_PURPOSE;
+    const bool serviceTravelTarget = IsServiceTravelPurpose(taskTravelPurpose) ||
+        IsServiceTravelPurpose(situation.travelTargetPurpose);
     const bool resupplyInProgress = serviceTravelTarget &&
         (taskTravelRequested || situation.travelTargetPreparing || situation.travelTargetTraveling ||
          (situation.travelTargetActive && !situation.travelTargetWorking));
@@ -3436,8 +3460,7 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
 
     const time_t now = time(nullptr);
     const bool serviceTravelTarget = taskTravelRequested && situation.travelTargetWorking &&
-        (situation.travelTargetPurpose == FRIEND_VENDOR_TRAVEL_PURPOSE ||
-         situation.travelTargetPurpose == FRIEND_REPAIR_TRAVEL_PURPOSE);
+        IsServiceTravelPurpose(situation.travelTargetPurpose);
     const bool expectedServiceNearby = situation.travelTargetPurpose == FRIEND_REPAIR_TRAVEL_PURPOSE ?
         situation.nearbyRepair : situation.nearbyVendor;
     if (serviceTravelTarget && !expectedServiceNearby)
@@ -3589,8 +3612,7 @@ bool FriendBotController::TryTravelForResupply(const FriendSituation& situation)
         return false;
 
     const bool canStartResupplyTravel = command == FriendCommand::Shop || mode == FriendMode::Solo;
-    const bool existingServiceTarget = situation.travelTargetPurpose == FRIEND_VENDOR_TRAVEL_PURPOSE ||
-        situation.travelTargetPurpose == FRIEND_REPAIR_TRAVEL_PURPOSE;
+    const bool existingServiceTarget = IsServiceTravelPurpose(situation.travelTargetPurpose);
 
     if (situation.travelTargetPreparing && !taskTravelRequested)
     {
@@ -3740,8 +3762,7 @@ bool FriendBotController::MoveToFriendTravelTarget(const FriendSituation& situat
     }
 
     WorldPosition from(bot);
-    const bool serviceTravelTarget = situation.travelTargetPurpose == FRIEND_VENDOR_TRAVEL_PURPOSE ||
-        situation.travelTargetPurpose == FRIEND_REPAIR_TRAVEL_PURPOSE;
+    const bool serviceTravelTarget = IsServiceTravelPurpose(situation.travelTargetPurpose);
     auto findServiceStandPoint = [&](float& outX, float& outY, float& outZ) -> bool
     {
         const float approachDistance = std::min<float>(INTERACTION_DISTANCE * 0.75f,
@@ -5319,6 +5340,8 @@ void FriendBotController::MaybeSayStatus(const FriendSituation& situation)
                 out << " " << situation.travelTargetName;
             if (situation.travelTargetDistanceKnown)
                 out << " " << situation.travelTargetDistance << "y";
+            else if (!situation.travelTargetSameMap)
+                out << " off-map";
             out << "]";
         }
         if (verbosity == FriendVerbosity::Weights && !lastWeightsLine.empty())

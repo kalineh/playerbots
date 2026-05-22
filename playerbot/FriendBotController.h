@@ -128,6 +128,8 @@ namespace ai
         bool travelTargetPreparing = false;
         bool travelTargetTraveling = false;
         bool travelTargetWorking = false;
+        bool travelTargetSameMap = false;
+        uint8 travelTargetStatus = 0;
         uint32 travelTargetPurpose = 0;
         bool travelTargetDistanceKnown = false;
         uint32 travelTargetDistance = 0;
