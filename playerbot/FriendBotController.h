@@ -227,6 +227,8 @@ namespace ai
         bool MoveToUnitRange(Unit* target, float desiredDistance, const std::string& action);
         bool PrefersMeleeDamage(const FriendSituation& situation) const;
         bool PrefersSelfDefenseTarget(const FriendSituation& situation) const;
+        int32 SelfThreatDangerScore(const FriendSituation& situation) const;
+        bool ShouldFightToSurvive(const FriendSituation& situation) const;
         bool CanProtectPartyWithThreat(const FriendSituation& situation) const;
         int32 PartyThreatScore(Unit* victim) const;
         bool CanClassHeal() const;

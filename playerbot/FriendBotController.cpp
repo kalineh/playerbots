@@ -27,7 +27,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v27";
+    const char* FRIEND_BOT_VERSION = "v28";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -995,7 +995,12 @@ std::string FriendBotController::FormatReport() const
     out << ", partyHp=" << static_cast<uint32>(lastSituation.lowestPartyHealth) << "%";
     out << ", balance=" << BalanceName(lastSituation.balance);
     if (lastSituation.botHasThreat)
+    {
         out << ", threat=self";
+        out << ", danger=" << SelfThreatDangerScore(lastSituation);
+        if (ShouldFightToSurvive(lastSituation))
+            out << ":fight";
+    }
     else if (lastSituation.healerPartyHasThreat)
         out << ", threat=healer";
     else if (lastSituation.vulnerablePartyHasThreat)
@@ -1178,6 +1183,16 @@ FriendSituation FriendBotController::BuildSituation()
             if (victim == bot)
             {
                 situation.botHasThreat = true;
+                if (!situation.attackersTargetingMeCount)
+                    situation.attackersTargetingMeCount = 1;
+
+                float distance = sServerFacade.GetDistance2d(bot, unit);
+                if (!situation.closestAttackerTargetingMeGuid || distance < closestAttackerTargetingMeDistance)
+                {
+                    situation.closestAttackerTargetingMeGuid = unit->GetObjectGuid();
+                    closestAttackerTargetingMeDistance = distance;
+                }
+
                 continue;
             }
 
@@ -1313,8 +1328,8 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
 
     const bool fragileThreat = situation.botHasThreat && !situation.tankish &&
         (situation.ranged || situation.healerish || CanClassHeal()) &&
-        (situation.botHealth < sPlayerbotAIConfig.almostFullHealth ||
-         situation.botHealthDelta <= FRIEND_HEALTH_DROP_NOTICE);
+        SelfThreatDangerScore(situation) >= 60;
+    const bool fightSelfThreat = ShouldFightToSurvive(situation);
 
     const bool selfHealthPressure = situation.botHealth < sPlayerbotAIConfig.lowHealth ||
         situation.botHealthDelta <= FRIEND_HEALTH_DROP_DANGER ||
@@ -1323,6 +1338,9 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
         situation.attackersTargetingMeCount > 0;
     if (selfHealthPressure)
     {
+        if (fightSelfThreat && SelfThreatDangerScore(situation) < 80)
+            return FriendIntent::DealDamage;
+
         if (CanClassHeal() && !selfActivelyThreatened)
             return FriendIntent::SavePartyMember;
 
@@ -1343,7 +1361,11 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
     if (partyNearby && ShouldOpportunisticHeal(situation))
         return FriendIntent::SavePartyMember;
 
-    if (situation.inCombat && PrefersSelfDefenseTarget(situation) && situation.attackersTargetingMeCount > 0)
+    if (situation.inCombat && situation.attackersTargetingMeCount > 0 && fightSelfThreat)
+        return FriendIntent::DealDamage;
+
+    if (situation.inCombat && PrefersSelfDefenseTarget(situation) && situation.attackersTargetingMeCount > 0 &&
+        SelfThreatDangerScore(situation) >= 45)
         return FriendIntent::CrowdControl;
 
     if (situation.inCombat && (((situation.ranged || situation.healerish) && situation.hasAttackers) ||
@@ -1605,6 +1627,13 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
             return ExecuteTaskIntent(intent, situation);
 
         case FriendIntent::SaveSelf:
+            if (ShouldFightToSurvive(situation))
+            {
+                if (TryCatalogDamage(situation, "friend fight back"))
+                    return true;
+                if (TryFreeDamage(situation, "friend fight back"))
+                    return true;
+            }
             if (TryActions(SelfPreservationActions(situation), "friend fallback self"))
             {
                 if (situation.botHealth < sPlayerbotAIConfig.lowHealth ||
@@ -2122,6 +2151,14 @@ Unit* FriendBotController::SelectDamageTarget(const FriendSituation& situation, 
     };
 
     Unit* target = nullptr;
+    if (!situation.tankish && situation.closestAttackerTargetingMeGuid &&
+        (ShouldFightToSurvive(situation) || SelfThreatDangerScore(situation) >= 45))
+    {
+        target = ai->GetUnit(situation.closestAttackerTargetingMeGuid);
+        if (Unit* selected = consider(target, "self-threat"))
+            return selected;
+    }
+
     if (CanProtectPartyWithThreat(situation) && (situation.vulnerablePartyHasThreat || situation.healerPartyHasThreat))
     {
         target = ai->GetUnit(situation.vulnerablePartyAttackerGuid);
@@ -2873,6 +2910,124 @@ bool FriendBotController::PrefersSelfDefenseTarget(const FriendSituation& situat
         default:
             return situation.healerish || situation.ranged || situation.botHealth < sPlayerbotAIConfig.mediumHealth;
     }
+}
+
+int32 FriendBotController::SelfThreatDangerScore(const FriendSituation& situation) const
+{
+    if (!ai || !ai->GetBot() || !situation.botHasThreat)
+        return 0;
+
+    Player* bot = ai->GetBot();
+    Unit* threat = ai->GetUnit(situation.closestAttackerTargetingMeGuid);
+    int32 score = 20;
+
+    if (situation.botHealth < sPlayerbotAIConfig.lowHealth)
+        score += 70;
+    else if (situation.botHealth < sPlayerbotAIConfig.mediumHealth)
+        score += 35;
+    else if (situation.botHealth < sPlayerbotAIConfig.almostFullHealth)
+        score += 10;
+
+    if (situation.botHealthDelta <= FRIEND_HEALTH_DROP_DANGER)
+        score += 55;
+    else if (situation.botHealthDelta <= FRIEND_HEALTH_DROP_NOTICE)
+        score += 20;
+
+    if (situation.attackersTargetingMeCount > 2)
+        score += 75;
+    else if (situation.attackersTargetingMeCount > 1)
+        score += 35;
+
+    if (situation.possibleTargetsCount > 2)
+        score += 20;
+
+    if (situation.balance < 70)
+        score += 25;
+    else if (situation.balance < 85)
+        score += 10;
+
+    if (threat)
+    {
+        const int32 levelDelta = static_cast<int32>(threat->GetLevel()) - static_cast<int32>(bot->GetLevel());
+        if (levelDelta >= 3)
+            score += 45;
+        else if (levelDelta >= 1)
+            score += 20;
+        else if (levelDelta <= -3)
+            score -= 25;
+        else if (levelDelta <= -1)
+            score -= 10;
+
+        if (IsEliteTarget(ai, threat))
+            score += 45;
+
+        const uint8 threatHealth = HealthPercent(ai, threat);
+        if (threatHealth < 20)
+            score -= 25;
+        else if (threatHealth < 40)
+            score -= 15;
+        else if (threatHealth > 80)
+            score += 10;
+
+        const uint32 botHealth = bot->GetHealth();
+        const uint32 threatHealthValue = threat->GetHealth();
+        if (botHealth && threatHealthValue)
+        {
+            if (static_cast<uint64>(threatHealthValue) * 100 < static_cast<uint64>(botHealth) * 70)
+                score -= 20;
+            else if (static_cast<uint64>(threatHealthValue) > static_cast<uint64>(botHealth) * 130 / 100)
+                score += 25;
+        }
+
+        const float distance = sServerFacade.GetDistance2d(bot, threat);
+        if (distance <= sPlayerbotAIConfig.meleeDistance)
+            score += 15;
+        else if (distance < 8.0f)
+            score += 8;
+    }
+
+    if (situation.nearbyPartyMembers > 1)
+        score -= 10;
+    else if (situation.leaderSafe && situation.leaderDistance > SoftLeashDistance(situation))
+        score += 15;
+
+    return std::max<int32>(0, std::min<int32>(200, score));
+}
+
+bool FriendBotController::ShouldFightToSurvive(const FriendSituation& situation) const
+{
+    if (!ai || !ai->GetBot() || !situation.botHasThreat || !situation.closestAttackerTargetingMeGuid)
+        return false;
+
+    Player* bot = ai->GetBot();
+    Unit* threat = ai->GetUnit(situation.closestAttackerTargetingMeGuid);
+    if (!IsValidFriendDamageTarget(threat, false))
+        return false;
+
+    const uint8 threatHealth = HealthPercent(ai, threat);
+    const int32 danger = SelfThreatDangerScore(situation);
+    const int32 levelDelta = static_cast<int32>(threat->GetLevel()) - static_cast<int32>(bot->GetLevel());
+    const bool targetWeak = threatHealth < 35 || levelDelta <= -2;
+    const bool oneOnOne = situation.attackersTargetingMeCount <= 1 && situation.possibleTargetsCount <= 2;
+    const bool stableEnough = situation.botHealth >= sPlayerbotAIConfig.mediumHealth &&
+        situation.botHealthDelta > FRIEND_HEALTH_DROP_DANGER;
+    const bool enemyAlreadyLosing = bot->GetHealth() && threat->GetHealth() &&
+        static_cast<uint64>(threat->GetHealth()) * 100 < static_cast<uint64>(bot->GetHealth()) * 90;
+
+    if (targetWeak && situation.botHealth >= sPlayerbotAIConfig.lowHealth &&
+        situation.attackersTargetingMeCount <= 2 && situation.possibleTargetsCount <= 3)
+        return true;
+
+    if (!oneOnOne || IsEliteTarget(ai, threat))
+        return false;
+
+    if (levelDelta >= 3 && threatHealth > 30)
+        return false;
+
+    if (situation.botHealth < sPlayerbotAIConfig.lowHealth && threatHealth > 20)
+        return false;
+
+    return danger < 70 || (stableEnough && enemyAlreadyLosing);
 }
 
 bool FriendBotController::CanProtectPartyWithThreat(const FriendSituation& situation) const
@@ -6053,8 +6208,16 @@ std::vector<std::string> FriendBotController::SelfPreservationActions(const Frie
             AddActions(actions, { "stoneclaw totem", "lesser healing wave", "healing wave" });
             break;
         case CLASS_MAGE:
-            AddActions(actions, { "ice block", "blink", "mana shield", "ice barrier", "frost nova" });
+        {
+            const int32 danger = SelfThreatDangerScore(situation);
+            if (danger >= 95)
+                AddActions(actions, { "ice block", "blink", "ice barrier", "mana shield", "frost nova" });
+            else if (danger >= 55)
+                AddActions(actions, { "ice barrier", "mana shield", "frost nova" });
+            else
+                AddActions(actions, { "ice barrier", "mana shield" });
             break;
+        }
         case CLASS_WARLOCK:
             AddActions(actions, { "death coil", "sacrifice", "soulshatter", "drain life" });
             if (mode != FriendMode::Dungeon)
