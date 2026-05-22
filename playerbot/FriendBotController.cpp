@@ -417,17 +417,22 @@ FriendSituation FriendBotController::BuildSituation()
         situation.balance = GetContextValue<uint8>(context, "balance", 100);
         situation.bagSpace = GetContextValue<uint8>(context, "bag space", 0);
         situation.durability = GetContextValue<uint8>(context, "durability inventory", 100);
-        situation.travelTargetActive = GetContextValue<bool>(context, "travel target active", false);
-        situation.travelTargetTraveling = GetContextValue<bool>(context, "travel target traveling", false);
         TravelTarget* travelTarget = context->GetValue<TravelTarget*>("travel target")->Get();
         if (travelTarget)
-            situation.travelTargetPreparing = travelTarget->GetStatus() == TravelStatus::TRAVEL_STATUS_PREPARE;
+        {
+            const TravelStatus travelStatus = travelTarget->GetStatus();
+            situation.travelTargetActive = travelTarget->IsActive();
+            situation.travelTargetPreparing = travelStatus == TravelStatus::TRAVEL_STATUS_PREPARE;
+            situation.travelTargetTraveling = travelStatus == TravelStatus::TRAVEL_STATUS_READY ||
+                travelStatus == TravelStatus::TRAVEL_STATUS_TRAVEL;
+        }
 
         uint32 vendorItems = context->GetValue<uint32>("item count", "vendor")->Get();
         uint32 trashItems = context->GetValue<uint32>("item count", "gray")->Get();
+        uint32 minRepairCost = context->GetValue<uint32>("min repair cost")->Get();
+        uint32 repairMoney = context->GetValue<uint32>("free money for", static_cast<uint32>(NeedMoneyFor::repair))->Get();
         situation.shouldSell = situation.bagSpace > 80 || vendorItems > 0 || trashItems > 0;
-        situation.shouldRepair = situation.durability < 95 && context->GetValue<uint32>("min repair cost")->Get() <=
-            context->GetValue<uint32>("free money for", static_cast<uint32>(NeedMoneyFor::repair))->Get();
+        situation.shouldRepair = situation.durability < 95 && minRepairCost > 0 && minRepairCost <= repairMoney;
         situation.lowFood = context->GetValue<uint32>("item count", "food")->Get() < 5;
         situation.lowWater = bot->GetMaxPower(POWER_MANA) > 0 && context->GetValue<uint32>("item count", "water")->Get() < 5;
         situation.lowAmmo = bot->getClass() == CLASS_HUNTER && context->GetValue<uint32>("item count", "ammo")->Get() < 200;
@@ -1952,9 +1957,11 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
 
     if (command == FriendCommand::Shop)
     {
+        const bool blocked = NeedsTownChores(situation);
         command = FriendCommand::None;
         ClearIdleState();
-        SetResult(lastIntent, "shop done", FriendExecutionResult::Done);
+        SetResult(lastIntent, blocked ? "shop blocked" : "shop done",
+            blocked ? FriendExecutionResult::BlockedNotUseful : FriendExecutionResult::Done);
         ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
         return true;
     }
@@ -1969,6 +1976,21 @@ bool FriendBotController::TryTravelForResupply(const FriendSituation& situation)
 
     if (command != FriendCommand::Shop && mode != FriendMode::Solo)
         return false;
+
+    if (!ai->HasStrategy("travel", BotState::BOT_STATE_NON_COMBAT) &&
+        !ai->HasStrategy("travel once", BotState::BOT_STATE_NON_COMBAT))
+    {
+        SetResult(lastIntent, "shop blocked:no travel", FriendExecutionResult::BlockedNotUseful);
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        return false;
+    }
+
+    if (situation.travelTargetPreparing && !resupplyTravelRequested)
+    {
+        SetResult(lastIntent, "shop blocked:travel busy", FriendExecutionResult::BlockedNotUseful);
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        return false;
+    }
 
     if ((situation.travelTargetPreparing || situation.travelTargetTraveling || situation.travelTargetActive) &&
         !resupplyTravelRequested)

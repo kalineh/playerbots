@@ -317,7 +317,7 @@ void FriendAbilityCatalog::Refresh(PlayerbotAI* ai)
         return;
 
     std::map<std::string, FriendAbility> byName;
-    int loc = ai->GetBot()->GetSession()->GetSessionDbcLocale();
+    int loc = ai->GetBot()->GetSession() ? ai->GetBot()->GetSession()->GetSessionDbcLocale() : 0;
 
     auto addSpell = [&](uint32 spellId)
     {
