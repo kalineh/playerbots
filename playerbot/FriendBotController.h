@@ -203,6 +203,8 @@ namespace ai
         bool MoveToUnitRange(Unit* target, float desiredDistance, const std::string& action);
         bool PrefersMeleeDamage(const FriendSituation& situation) const;
         bool PrefersSelfDefenseTarget(const FriendSituation& situation) const;
+        bool CanClassHeal() const;
+        bool ShouldOpportunisticHeal(const FriendSituation& situation) const;
         FriendCombatStyle GetCombatStyle(const FriendSituation& situation) const;
         bool ShouldConserveDamageMana(const FriendSituation& situation) const;
         bool IsLowPressureFight(const FriendSituation& situation) const;

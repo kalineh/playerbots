@@ -44,6 +44,9 @@ namespace
     const float FRIEND_RANGED_SPACING_DUNGEON = 10.0f;
     const float FRIEND_RANGED_SPACING_HOSTILE_BUFFER = 14.0f;
     const float FRIEND_RANGED_SPACING_PARTY_BUFFER = 3.0f;
+    const uint8 FRIEND_HEAL_TOP_OFF_HEALTH = 92;
+    const int32 FRIEND_HEALTH_DROP_NOTICE = -5;
+    const int32 FRIEND_HEALTH_DROP_DANGER = -10;
     const uint32 FRIEND_SOFT_LEVEL_CATCHUP_COOLDOWN = 5 * MINUTE;
     const uint32 FRIEND_SOFT_TRAINING_COOLDOWN = 3 * MINUTE;
     const uint32 FRIEND_SOFT_BAG_UPGRADE_COOLDOWN = 5 * MINUTE;
@@ -297,7 +300,6 @@ bool FriendBotController::HandleCommand(const std::string& rawCommand, Player* r
     if (cmd == "party" || cmd == "normal" || cmd == "reset" || cmd == "act normal")
     {
         mode = FriendMode::Party;
-        verbosity = FriendVerbosity::Silent;
         clearTemporaryState();
         response = "Party mode.";
         return true;
@@ -815,22 +817,28 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
         (!situation.inCombat || situation.inDungeon || !situation.hasAttackers))
         return FriendIntent::ReturnToParty;
 
+    const bool fragileThreat = situation.botHasThreat && !situation.tankish &&
+        (situation.ranged || situation.healerish || CanClassHeal()) &&
+        (situation.botHealth < sPlayerbotAIConfig.almostFullHealth ||
+         situation.botHealthDelta <= FRIEND_HEALTH_DROP_NOTICE);
+
     if (situation.botHealth < sPlayerbotAIConfig.lowHealth ||
-        situation.botHealthDelta <= -12 ||
-        (situation.botHealth < sPlayerbotAIConfig.mediumHealth && situation.botHealthDelta < -5))
+        situation.botHealthDelta <= FRIEND_HEALTH_DROP_DANGER ||
+        (situation.botHealth < sPlayerbotAIConfig.mediumHealth && situation.botHealthDelta <= FRIEND_HEALTH_DROP_NOTICE))
+        return FriendIntent::SaveSelf;
+
+    if (fragileThreat)
         return FriendIntent::SaveSelf;
 
     if (manualHealUntil > now)
         return FriendIntent::SavePartyMember;
 
     if (partyNearby && (situation.lowestPartyHealth < sPlayerbotAIConfig.lowHealth ||
-        situation.lowestPartyHealthDelta <= -12 ||
+        situation.lowestPartyHealthDelta <= FRIEND_HEALTH_DROP_DANGER ||
         (situation.lowestPartyHealth < sPlayerbotAIConfig.mediumHealth && situation.damagedPartyMembers)))
         return FriendIntent::SavePartyMember;
 
-    if (partyNearby && situation.healerish && situation.damagedPartyMembers > 0 &&
-        situation.lowestPartyHealth < sPlayerbotAIConfig.almostFullHealth &&
-        (situation.inCombat || situation.partyInCombat))
+    if (partyNearby && ShouldOpportunisticHeal(situation))
         return FriendIntent::SavePartyMember;
 
     if (situation.inCombat && PrefersSelfDefenseTarget(situation) && situation.attackersTargetingMeCount > 0)
@@ -958,12 +966,26 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
         case FriendIntent::SaveSelf:
             if (TryActions(SelfPreservationActions(situation), "friend self"))
             {
-                if (situation.botHealth < sPlayerbotAIConfig.lowHealth || situation.botHealthDelta <= -12)
+                if (situation.botHealth < sPlayerbotAIConfig.lowHealth ||
+                    situation.botHealthDelta <= FRIEND_HEALTH_DROP_DANGER ||
+                    (situation.botHasThreat && !situation.tankish &&
+                     (situation.ranged || situation.healerish || CanClassHeal())))
                     MaybeSayActivity(situation, "self-trouble", {
                         "I'm in trouble.",
-                        "Need a second here."
+                        "Need a second here.",
+                        "I've got aggro."
                     }, 40, 60);
                 return true;
+            }
+            if (TryDruidCombatForm(situation, "friend self form"))
+                return true;
+            if (situation.botHasThreat && !situation.tankish &&
+                (situation.ranged || situation.healerish || CanClassHeal()))
+            {
+                MaybeSayActivity(situation, "self-aggro", {
+                    "I need help.",
+                    "I've got aggro."
+                }, 35, 45);
             }
             if (!situation.hasAttackers && (situation.inCombat || situation.partyInCombat || situation.hasTarget))
                 return TryFallbackCombat(situation, "friend self fallback");
@@ -972,7 +994,8 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
         case FriendIntent::SavePartyMember:
             if (TryCatalogHeal(situation, "friend heal"))
             {
-                if (situation.lowestPartyHealth < sPlayerbotAIConfig.lowHealth || situation.lowestPartyHealthDelta <= -12)
+                if (situation.lowestPartyHealth < sPlayerbotAIConfig.lowHealth ||
+                    situation.lowestPartyHealthDelta <= FRIEND_HEALTH_DROP_DANGER)
                     MaybeSayActivity(situation, "heal-pressure", {
                         "Hold on, healing.",
                         "I've got heals."
@@ -981,7 +1004,8 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
             }
             if (TryActions(HealActions(situation), "friend heal"))
             {
-                if (situation.lowestPartyHealth < sPlayerbotAIConfig.lowHealth || situation.lowestPartyHealthDelta <= -12)
+                if (situation.lowestPartyHealth < sPlayerbotAIConfig.lowHealth ||
+                    situation.lowestPartyHealthDelta <= FRIEND_HEALTH_DROP_DANGER)
                     MaybeSayActivity(situation, "heal-pressure", {
                         "Hold on, healing.",
                         "I've got heals."
@@ -1033,9 +1057,16 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
             return ExecuteLoot(situation);
 
         case FriendIntent::DealDamage:
+            if (ShouldOpportunisticHeal(situation) && TryCatalogHeal(situation, "friend top off"))
+                return true;
             if (TryImproveRangedCombatSpacing(situation, "ranged spacing"))
                 return true;
             if (GetCombatStyle(situation) == FriendCombatStyle::Dry && TryFreeDamage(situation, "friend free damage"))
+                return true;
+            if (ai && ai->GetBot() && ai->GetBot()->getClass() == CLASS_DRUID &&
+                (ShouldConserveDamageMana(situation) || situation.botHasThreat ||
+                 situation.botMana < sPlayerbotAIConfig.mediumMana) &&
+                TryDruidCombatForm(situation, "friend druid form"))
                 return true;
             if (TryCatalogDamage(situation, "friend damage"))
                 return true;
@@ -1630,13 +1661,16 @@ bool FriendBotController::TryDruidCombatForm(const FriendSituation& situation, c
     if (ai->HasAnyAuraOf(bot, "cat form", "bear form", "dire bear form", NULL))
         return false;
 
-    if (situation.healerish && situation.damagedPartyMembers > 0)
+    const bool selfHot = ai->HasAnyAuraOf(bot, "regrowth", "rejuvenation", NULL);
+    const bool selfHotReady = selfHot && situation.botHealth < sPlayerbotAIConfig.almostFullHealth &&
+        situation.lowestPartyHealth >= sPlayerbotAIConfig.mediumHealth;
+    if (situation.healerish && situation.damagedPartyMembers > 0 &&
+        !situation.botHasThreat && !selfHotReady)
         return false;
 
-    if (situation.botMana < sPlayerbotAIConfig.lowMana)
-        return false;
-
-    if (situation.tankish || situation.hasAttackers || situation.botHealth < sPlayerbotAIConfig.almostFullHealth)
+    if (situation.tankish || situation.hasAttackers || situation.botHasThreat ||
+        situation.botHealth < sPlayerbotAIConfig.almostFullHealth ||
+        situation.botHealthDelta <= FRIEND_HEALTH_DROP_NOTICE)
     {
         if (TryAction("dire bear form", source) == FriendExecutionResult::Done)
             return true;
@@ -1938,6 +1972,38 @@ bool FriendBotController::PrefersSelfDefenseTarget(const FriendSituation& situat
     }
 }
 
+bool FriendBotController::CanClassHeal() const
+{
+    if (!ai || !ai->GetBot())
+        return false;
+
+    switch (ai->GetBot()->getClass())
+    {
+        case CLASS_PRIEST:
+        case CLASS_DRUID:
+        case CLASS_PALADIN:
+        case CLASS_SHAMAN:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool FriendBotController::ShouldOpportunisticHeal(const FriendSituation& situation) const
+{
+    if (!CanClassHeal() || situation.damagedPartyMembers == 0 ||
+        (!situation.inCombat && !situation.partyInCombat))
+        return false;
+
+    if (situation.lowestPartyHealth < sPlayerbotAIConfig.mediumHealth)
+        return true;
+
+    if (situation.lowestPartyHealthDelta <= FRIEND_HEALTH_DROP_NOTICE)
+        return true;
+
+    return situation.healerish && situation.lowestPartyHealth < FRIEND_HEAL_TOP_OFF_HEALTH;
+}
+
 FriendCombatStyle FriendBotController::GetCombatStyle(const FriendSituation& situation) const
 {
     if (!ai || !ai->GetBot() || !ai->GetBot()->HasMana())
@@ -1945,8 +2011,8 @@ FriendCombatStyle FriendBotController::GetCombatStyle(const FriendSituation& sit
 
     const bool urgent = situation.botHealth < sPlayerbotAIConfig.lowHealth ||
         situation.lowestPartyHealth < sPlayerbotAIConfig.lowHealth ||
-        situation.botHealthDelta <= -12 ||
-        situation.lowestPartyHealthDelta <= -12 ||
+        situation.botHealthDelta <= FRIEND_HEALTH_DROP_DANGER ||
+        situation.lowestPartyHealthDelta <= FRIEND_HEALTH_DROP_DANGER ||
         situation.vulnerablePartyHasThreat ||
         situation.healerPartyHasThreat;
     if (urgent)
@@ -1984,8 +2050,8 @@ bool FriendBotController::IsLowPressureFight(const FriendSituation& situation) c
         situation.balance >= 90 &&
         situation.botHealth >= sPlayerbotAIConfig.mediumHealth &&
         situation.lowestPartyHealth >= sPlayerbotAIConfig.almostFullHealth &&
-        situation.botHealthDelta > -8 &&
-        situation.lowestPartyHealthDelta > -8;
+        situation.botHealthDelta > FRIEND_HEALTH_DROP_NOTICE &&
+        situation.lowestPartyHealthDelta > FRIEND_HEALTH_DROP_NOTICE;
 }
 
 int32 FriendBotController::ManaSpendScorePenalty(const FriendSituation& situation, const FriendAbility& ability) const
@@ -1993,19 +2059,27 @@ int32 FriendBotController::ManaSpendScorePenalty(const FriendSituation& situatio
     if (!ability.UsesMana() || ability.Has(FRIEND_ABILITY_INTERRUPT))
         return 0;
 
+    int32 extraPenalty = 0;
+    if (ai && ai->GetBot() && ai->GetBot()->getClass() == CLASS_PRIEST &&
+        IsLowPressureFight(situation) && situation.botMana < 95 &&
+        situation.lowestPartyHealth >= FRIEND_HEAL_TOP_OFF_HEALTH)
+    {
+        extraPenalty += ability.Has(FRIEND_ABILITY_DOT) ? 10 : 30;
+    }
+
     switch (GetCombatStyle(situation))
     {
         case FriendCombatStyle::Burn:
-            return 0;
+            return extraPenalty;
         case FriendCombatStyle::Normal:
-            return situation.botMana < sPlayerbotAIConfig.mediumMana ? 20 : 0;
+            return (situation.botMana < sPlayerbotAIConfig.mediumMana ? 20 : 0) + extraPenalty;
         case FriendCombatStyle::Conserve:
-            return ability.Has(FRIEND_ABILITY_DOT) ? 25 : 55;
+            return (ability.Has(FRIEND_ABILITY_DOT) ? 25 : 55) + extraPenalty;
         case FriendCombatStyle::Dry:
-            return ability.Has(FRIEND_ABILITY_DOT) ? 60 : 120;
+            return (ability.Has(FRIEND_ABILITY_DOT) ? 60 : 120) + extraPenalty;
     }
 
-    return 0;
+    return extraPenalty;
 }
 
 bool FriendBotController::ShouldUseLegacySupportActions(const FriendSituation& situation) const
@@ -2164,14 +2238,15 @@ bool FriendBotController::TryCatalogHeal(const FriendSituation& situation, const
 
         int32 score = 20;
         if (ability.Has(FRIEND_ABILITY_SHIELD))
-            score += targetHealth < sPlayerbotAIConfig.mediumHealth || situation.lowestPartyHealthDelta <= -8 ? 35 : 10;
+            score += (targetHealth < sPlayerbotAIConfig.mediumHealth ||
+                situation.lowestPartyHealthDelta <= FRIEND_HEALTH_DROP_NOTICE) ? 35 : 10;
         if (ability.Has(FRIEND_ABILITY_HOT))
             score += targetHealth > sPlayerbotAIConfig.lowHealth ? 35 : 5;
         if (ability.Has(FRIEND_ABILITY_HEAL) && !ability.Has(FRIEND_ABILITY_HOT))
             score += targetHealth < sPlayerbotAIConfig.mediumHealth ? 45 : 8;
         if (targetHealth < sPlayerbotAIConfig.lowHealth)
             score += 40;
-        if (situation.lowestPartyHealthDelta <= -8)
+        if (situation.lowestPartyHealthDelta <= FRIEND_HEALTH_DROP_NOTICE)
             score += 25;
         if (targetHealth > sPlayerbotAIConfig.almostFullHealth && !ability.Has(FRIEND_ABILITY_HOT) && !ability.Has(FRIEND_ABILITY_SHIELD))
             score -= 35;
@@ -4022,7 +4097,8 @@ std::vector<std::string> FriendBotController::HealActions(const FriendSituation&
 {
     std::vector<std::string> actions;
 
-    if (situation.lowestPartyHealth < sPlayerbotAIConfig.lowHealth || situation.lowestPartyHealthDelta <= -12)
+    if (situation.lowestPartyHealth < sPlayerbotAIConfig.lowHealth ||
+        situation.lowestPartyHealthDelta <= FRIEND_HEALTH_DROP_DANGER)
     {
         AddActions(actions, {
             "lay on hands on party", "pain suppression on party", "power word: shield on party",
