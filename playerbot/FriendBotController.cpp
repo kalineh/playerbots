@@ -140,6 +140,11 @@ namespace
         return value.length() >= prefix.length() && value.compare(0, prefix.length(), prefix) == 0;
     }
 
+    bool Contains(const std::string& value, const std::string& needle)
+    {
+        return value.find(needle) != std::string::npos;
+    }
+
     std::string Trim(std::string value)
     {
         while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())))
@@ -2929,7 +2934,7 @@ bool FriendBotController::NormalizeFriendMovePosition(float& x, float& y, float&
         {
             if (const TerrainInfo* terrain = destination.getTerrain())
             {
-                const float bottom = terrain->GetHeightStatic(x, y, z);
+                float bottom = terrain->GetHeightStatic(x, y, z);
                 const float waterLevel = terrain->GetWaterOrGroundLevel(x, y, z, bottom, true);
                 if (waterLevel > -200000.0f && waterLevel > bottom)
                 {
