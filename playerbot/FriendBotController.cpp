@@ -25,6 +25,7 @@ using namespace ai;
 
 namespace
 {
+    const char* FRIEND_BOT_VERSION = "2026.05.21.1";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -449,6 +450,12 @@ bool FriendBotController::HandleCommand(const std::string& rawCommand, Player* r
         return true;
     }
 
+    if (cmd == "version")
+    {
+        response = std::string("Friend bots ") + FRIEND_BOT_VERSION;
+        return true;
+    }
+
     if (cmd == "items" || StartsWith(cmd, "items "))
     {
         std::string filter = cmd == "items" ? "" : Trim(cmd.substr(6));
@@ -560,7 +567,7 @@ void FriendBotController::Report(Player* requester) const
 std::string FriendBotController::FormatReport() const
 {
     std::ostringstream out;
-    out << "friend: mode=" << ModeName(mode);
+    out << "friend " << FRIEND_BOT_VERSION << ": mode=" << ModeName(mode);
     out << ", command=" << CommandName(command);
     out << ", idle=" << IdleGoalName(idleGoal);
     out << ", proposal=" << ProposalName(pendingProposal);
@@ -4531,7 +4538,7 @@ void FriendBotController::PrintHelp(Player* requester) const
         PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
     ai->TellPlayerNoFacing(requester, "progress: ok, no, forcelevel N, forcelevelsync, forcegearsync, forcegearempty",
         PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
-    ai->TellPlayerNoFacing(requester, "debug: report, intent/verbose, debug, silent, items [filter], equip [slot], help",
+    ai->TellPlayerNoFacing(requester, "debug: report, version, intent/verbose, debug, silent, items [filter], equip [slot], help",
         PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
 }
 
