@@ -29,7 +29,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v38";
+    const char* FRIEND_BOT_VERSION = "v39";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -2199,6 +2199,18 @@ Unit* FriendBotController::SelectDamageTarget(const FriendSituation& situation, 
         return candidate;
     };
 
+    auto isPossibleAttackCandidate = [&](Unit* candidate) -> bool
+    {
+        Player* bot = ai->GetBot();
+        if (!IsUsableUnit(ai, candidate) || sServerFacade.IsFriendlyTo(bot, candidate))
+            return false;
+
+        if (!PossibleAttackTargetsValue::IsPossibleTarget(candidate, bot, sPlayerbotAIConfig.sightDistance, true))
+            return false;
+
+        return candidate->IsInCombat() || candidate->GetVictim() || candidate->GetGuidValue(UNIT_FIELD_TARGET);
+    };
+
     Unit* target = nullptr;
     if (!situation.tankish && situation.closestAttackerTargetingMeGuid &&
         (ShouldFightToSurvive(situation) || SelfThreatDangerScore(situation) >= 45))
@@ -2335,7 +2347,7 @@ Unit* FriendBotController::SelectDamageTarget(const FriendSituation& situation, 
     for (std::list<ObjectGuid>::const_iterator itr = possibleTargets.begin(); itr != possibleTargets.end(); ++itr)
     {
         Unit* candidate = ai->GetUnit(*itr);
-        if (!IsValidFriendDamageTarget(candidate, true))
+        if (!IsValidFriendDamageTarget(candidate, true) && !isPossibleAttackCandidate(candidate))
             continue;
 
         if (ShouldAvoidBreakingCrowdControl(candidate))
