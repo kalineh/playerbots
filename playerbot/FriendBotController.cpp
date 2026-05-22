@@ -13,6 +13,7 @@
 #include "strategy/actions/MovementActions.h"
 #include "strategy/values/BudgetValues.h"
 #include "strategy/values/ItemUsageValue.h"
+#include "strategy/values/LootValues.h"
 #include "strategy/values/PossibleAttackTargetsValue.h"
 #include "strategy/values/TravelValues.h"
 
@@ -27,7 +28,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v32";
+    const char* FRIEND_BOT_VERSION = "v33";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -663,6 +664,13 @@ void FriendBotController::RunTick(bool minimal)
     FriendSituation situation = BuildSituation();
     lastSituation = situation;
     ResetTemporaryCommandIfSatisfied(situation);
+
+    if (TryAutoLootRoll(situation))
+    {
+        MaybeSayStatus(situation);
+        MaybeProposeTownChores(situation);
+        return;
+    }
 
     if (TryPendingTrade(situation))
     {
@@ -2496,6 +2504,28 @@ bool FriendBotController::ShouldLootNow(const FriendSituation& situation, bool l
         return situation.leaderDistance <= PreferredLeaderDistance(situation);
 
     return situation.leaderDistance <= SoftLeashDistance(situation);
+}
+
+bool FriendBotController::TryAutoLootRoll(const FriendSituation& situation)
+{
+    (void)situation;
+    if (!ai || !ai->GetBot() || !ai->GetAiObjectContext() || !ai->GetBot()->GetGroup())
+        return false;
+
+    AiObjectContext* context = ai->GetAiObjectContext();
+    if (GetContextValue<LootRollMap>(context, "active rolls", LootRollMap()).empty())
+        return false;
+
+    lastIntent = FriendIntent::LootNearby;
+    FriendExecutionResult result = TryAction("auto loot roll", "friend loot roll");
+    if (result != FriendExecutionResult::Done)
+        return false;
+
+    MaybeSayActivity(situation, "loot-roll", {
+        "I'll roll on that.",
+        "Rolling for loot."
+    }, 25, 60);
+    return true;
 }
 
 Unit* FriendBotController::GetHealTarget(const FriendSituation& situation) const

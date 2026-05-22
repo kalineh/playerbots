@@ -253,6 +253,7 @@ namespace ai
         Unit* GetHealTarget(const FriendSituation& situation) const;
         std::vector<Unit*> GetPartyTargets() const;
         bool ShouldLootNow(const FriendSituation& situation, bool localPartyInCombat) const;
+        bool TryAutoLootRoll(const FriendSituation& situation);
         bool ExecuteLoot(const FriendSituation& situation, bool allowObjects = false);
         bool MoveToRecoverPosition(const FriendSituation& situation);
         bool ExecuteResupply(const FriendSituation& situation);
