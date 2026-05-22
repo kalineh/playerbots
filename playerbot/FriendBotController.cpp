@@ -25,7 +25,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v10";
+    const char* FRIEND_BOT_VERSION = "v11";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -335,6 +335,16 @@ namespace
         return action == "move near leader" ||
             action == "stay close" ||
             action == "idle orbit";
+    }
+
+    bool IsActiveIdleGoal(FriendIdleGoal goal)
+    {
+        return goal == FriendIdleGoal::Resupply ||
+            goal == FriendIdleGoal::GatherNearby ||
+            goal == FriendIdleGoal::GrindNearby ||
+            goal == FriendIdleGoal::TravelToGrind ||
+            goal == FriendIdleGoal::TravelToGather ||
+            goal == FriendIdleGoal::ExploreNearby;
     }
 
     std::string Trim(std::string value)
@@ -3479,25 +3489,40 @@ bool FriendBotController::TryTravelForResupply(const FriendSituation& situation)
 bool FriendBotController::MoveToFriendTravelTarget(const FriendSituation& situation)
 {
     if (!ai || !ai->GetBot() || !ai->GetAiObjectContext() || !ai->CanMove())
+    {
+        SetResult(lastIntent, "move to travel target:blocked", FriendExecutionResult::BlockedNotPossible);
         return false;
+    }
 
     Player* bot = ai->GetBot();
     if (!bot->GetMotionMaster())
+    {
+        SetResult(lastIntent, "move to travel target:no motion", FriendExecutionResult::BlockedNotPossible);
         return false;
+    }
 
     TravelTarget* target = ai->GetAiObjectContext()->GetValue<TravelTarget*>("travel target")->Get();
     if (!target || !target->GetPosition() || !target->GetDestination())
+    {
+        SetResult(lastIntent, "move to travel target:no target", FriendExecutionResult::BlockedNotUseful);
         return false;
+    }
 
     if (target->GetStatus() == TravelStatus::TRAVEL_STATUS_READY)
         target->SetStatus(TravelStatus::TRAVEL_STATUS_TRAVEL);
 
     if (target->GetStatus() != TravelStatus::TRAVEL_STATUS_TRAVEL && target->GetStatus() != TravelStatus::TRAVEL_STATUS_WORK)
+    {
+        SetResult(lastIntent, "move to travel target:not traveling", FriendExecutionResult::BlockedNotUseful);
         return false;
+    }
 
     WorldPosition destination = *target->GetPosition();
     if (destination.getMapId() != bot->GetMapId())
+    {
+        SetResult(lastIntent, "move to travel target:wrong map", FriendExecutionResult::BlockedNotPossible);
         return false;
+    }
 
     WorldPosition from(bot);
     const bool serviceTravelTarget = situation.travelTargetPurpose == FRIEND_VENDOR_TRAVEL_PURPOSE ||
@@ -3588,11 +3613,17 @@ bool FriendBotController::MoveToFriendTravelTarget(const FriendSituation& situat
     }
 
     if (!NormalizeFriendMovePosition(x, y, z))
+    {
+        SetResult(lastIntent, "move to travel target:bad position", FriendExecutionResult::BlockedNotPossible);
         return false;
+    }
 
     ClearFriendMovement(false);
     if (!MoveFriendPoint(x, y, z))
+    {
+        SetResult(lastIntent, "move to travel target:move failed", FriendExecutionResult::Failed);
         return false;
+    }
 
     SetResult(lastIntent, "move to travel target", FriendExecutionResult::Done);
     ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
@@ -4466,9 +4497,19 @@ bool FriendBotController::ExecuteCurrentIdleGoal(const FriendSituation& situatio
             break;
     }
 
+    FriendIdleGoal failedGoal = idleGoal;
     idleGoal = FriendIdleGoal::None;
     idleGoalUntil = 0;
     idleNextActionAt = now + urand(4, 10);
+
+    if (IsActiveIdleGoal(failedGoal))
+    {
+        if (lastResult == FriendExecutionResult::Done || lastAction.empty())
+            SetResult(lastIntent, "idle " + IdleGoalName(failedGoal) + " blocked", FriendExecutionResult::BlockedNotUseful);
+
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        return true;
+    }
 
     if (situation.leaderSafe)
         return MoveInLeaderOrbit(situation, "idle orbit", false);
@@ -4492,7 +4533,10 @@ bool FriendBotController::ExecuteIdleTravelGoal(const FriendSituation& situation
         situation.botMana >= sPlayerbotAIConfig.lowMana &&
         !NeedsTownChores(situation);
     if (!soloTravel && !partyBoredTravel)
+    {
+        SetResult(lastIntent, action + ":party not ready", FriendExecutionResult::BlockedNotUseful);
         return false;
+    }
 
     if (situation.travelTargetWorking && situation.travelTargetPurpose == purpose)
     {
@@ -4506,7 +4550,10 @@ bool FriendBotController::ExecuteIdleTravelGoal(const FriendSituation& situation
     }
 
     if (idleTravelRequested && idleTravelPurpose && idleTravelPurpose != purpose)
+    {
+        SetResult(lastIntent, action + ":other travel active", FriendExecutionResult::BlockedNotUseful);
         return false;
+    }
 
     if ((situation.travelTargetPreparing || situation.travelTargetTraveling || situation.travelTargetActive) &&
         (!idleTravelRequested || idleTravelPurpose != purpose))
@@ -4525,7 +4572,10 @@ bool FriendBotController::ExecuteIdleTravelGoal(const FriendSituation& situation
 
         TravelTarget* target = ai->GetAiObjectContext()->GetValue<TravelTarget*>("travel target")->Get();
         if (!target || target->GetStatus() != TravelStatus::TRAVEL_STATUS_PREPARE)
+        {
+            SetResult(lastIntent, action + ":prepare failed", FriendExecutionResult::Failed);
             return false;
+        }
 
         SetResult(lastIntent, action + ":preparing", FriendExecutionResult::Done);
         ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
@@ -4541,7 +4591,13 @@ bool FriendBotController::ExecuteIdleTravelGoal(const FriendSituation& situation
             !ai->HasStrategy("travel once", BotState::BOT_STATE_NON_COMBAT))
             ai->ChangeStrategy("+travel once", BotState::BOT_STATE_NON_COMBAT);
 
-        return TryAction("move to travel target", "friend idle", 0, ai->GetBot()) == FriendExecutionResult::Done;
+        FriendExecutionResult moveResult = TryAction("move to travel target", "friend idle", 0, ai->GetBot());
+        if (moveResult == FriendExecutionResult::Done)
+            return true;
+
+        if (moveResult == FriendExecutionResult::BlockedNoAction)
+            SetResult(lastIntent, action + ":move failed", FriendExecutionResult::Failed);
+        return false;
     }
 
     FriendExecutionResult result = TryRequestTravelTarget(purpose);
