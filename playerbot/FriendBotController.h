@@ -69,6 +69,7 @@ namespace ai
         SaveSelf,
         SavePartyMember,
         BuffOrCureParty,
+        Adventure,
         CrowdControl,
         PullWithParty,
         LootNearby,
@@ -253,6 +254,7 @@ namespace ai
         void MaybeProposeTownChores(const FriendSituation& situation);
         void ClearProposal();
         bool ExecuteIdleGoal(const FriendSituation& situation);
+        bool ExecuteAdventureActivity(const FriendSituation& situation);
         bool IsSafeForIdleActivity(const FriendSituation& situation) const;
         FriendIdleGoal SelectIdleGoal(const FriendSituation& situation);
         bool ExecuteCurrentIdleGoal(const FriendSituation& situation);
@@ -331,6 +333,7 @@ namespace ai
         time_t nextSoftTrainingAt = 0;
         time_t nextSoftBagUpgradeAt = 0;
         time_t nextSoftGearUpgradeAt = 0;
+        time_t nextResupplyAttemptAt = 0;
         time_t lastPlanningBusyAt = 0;
         std::string lastActivityBark;
         time_t nextActivityBarkAt = 0;
