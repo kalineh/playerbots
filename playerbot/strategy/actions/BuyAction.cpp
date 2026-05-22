@@ -8,6 +8,18 @@
 
 using namespace ai;
 
+namespace
+{
+    uint32 VendorNpcFlags()
+    {
+        return UNIT_NPC_FLAG_VENDOR |
+            UNIT_NPC_FLAG_VENDOR_AMMO |
+            UNIT_NPC_FLAG_VENDOR_FOOD |
+            UNIT_NPC_FLAG_VENDOR_POISON |
+            UNIT_NPC_FLAG_VENDOR_REAGENT;
+    }
+}
+
 bool BuyAction::Execute(Event& event)
 {
     Player* requester = event.getOwner() ? event.getOwner() : GetMaster();
@@ -30,7 +42,7 @@ bool BuyAction::Execute(Event& event)
     for (std::list<ObjectGuid>::iterator i = vendors.begin(); i != vendors.end(); ++i)
     {
         ObjectGuid vendorguid = *i;
-        Creature *pCreature = bot->GetNPCIfCanInteractWith(vendorguid, UNIT_NPC_FLAG_VENDOR);
+        Creature *pCreature = bot->GetNPCIfCanInteractWith(vendorguid, VendorNpcFlags());
         if (!pCreature)
             continue;
 
@@ -308,7 +320,7 @@ bool BuyBackAction::Execute(Event& event)
     for (std::list<ObjectGuid>::iterator i = vendors.begin(); i != vendors.end(); ++i)
     {
         vendorguid = *i;
-        Creature* pCreature = bot->GetNPCIfCanInteractWith(vendorguid, UNIT_NPC_FLAG_VENDOR);
+        Creature* pCreature = bot->GetNPCIfCanInteractWith(vendorguid, VendorNpcFlags());
         if (!pCreature)
             continue;
 

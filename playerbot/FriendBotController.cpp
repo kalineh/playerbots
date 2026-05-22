@@ -51,6 +51,15 @@ namespace
     const uint32 FRIEND_PROPOSAL_COOLDOWN = 5 * MINUTE;
     const uint32 FRIEND_PROPOSAL_REJECT_COOLDOWN = 10 * MINUTE;
 
+    uint32 FriendVendorNpcFlags()
+    {
+        return UNIT_NPC_FLAG_VENDOR |
+            UNIT_NPC_FLAG_VENDOR_AMMO |
+            UNIT_NPC_FLAG_VENDOR_FOOD |
+            UNIT_NPC_FLAG_VENDOR_POISON |
+            UNIT_NPC_FLAG_VENDOR_REAGENT;
+    }
+
     void AddActions(std::vector<std::string>& actions, std::initializer_list<const char*> names)
     {
         for (const char* name : names)
@@ -517,6 +526,9 @@ std::string FriendBotController::FormatReport() const
     out << ", bag=" << static_cast<uint32>(lastSituation.bagSpace) << "%";
     out << ", dur=" << static_cast<uint32>(lastSituation.durability) << "%";
     out << ", calm=" << lastSituation.calmDowntimeSeconds << "s";
+    out << ", town=" << (lastSituation.inTown ? "y" : "n");
+    out << ", vendor=" << (lastSituation.nearbyVendor ? "y" : "n");
+    out << ", repairNpc=" << (lastSituation.nearbyRepair ? "y" : "n");
     out << ", partyHp=" << static_cast<uint32>(lastSituation.lowestPartyHealth) << "%";
     out << ", balance=" << BalanceName(lastSituation.balance);
     if (lastSituation.botHasThreat)
@@ -713,7 +725,7 @@ FriendSituation FriendBotController::BuildSituation()
         std::list<ObjectGuid> interactNpcs = context->GetValue<std::list<ObjectGuid> >("nearest npcs")->Get();
         for (std::list<ObjectGuid>::const_iterator itr = interactNpcs.begin(); itr != interactNpcs.end(); ++itr)
         {
-            if (bot->GetNPCIfCanInteractWith(*itr, UNIT_NPC_FLAG_VENDOR))
+            if (bot->GetNPCIfCanInteractWith(*itr, FriendVendorNpcFlags()))
                 situation.nearbyVendor = true;
             if (bot->GetNPCIfCanInteractWith(*itr, UNIT_NPC_FLAG_REPAIR))
                 situation.nearbyRepair = true;
@@ -2605,8 +2617,29 @@ bool FriendBotController::NormalizeFriendMovePosition(float& x, float& y, float&
         return false;
 
     Player* bot = ai->GetBot();
-    if (!bot->IsFlying() && !bot->IsFreeFlying() && !bot->IsSwimming())
+    if (!bot->IsFlying() && !bot->IsFreeFlying())
+    {
+        WorldPosition botPosition(bot);
+        WorldPosition destination(bot->GetMapId(), x, y, z);
+        const bool waterRelevant = botPosition.isInWater() || botPosition.isUnderWater() ||
+            destination.isInWater() || destination.isUnderWater();
+
+        if (waterRelevant)
+        {
+            if (const TerrainInfo* terrain = destination.getTerrain())
+            {
+                const float bottom = terrain->GetHeightStatic(x, y, z);
+                const float waterLevel = terrain->GetWaterOrGroundLevel(x, y, z, bottom, true);
+                if (waterLevel > -200000.0f && waterLevel > bottom)
+                {
+                    z = waterLevel;
+                    return WorldPosition(bot->GetMapId(), x, y, z).isValid();
+                }
+            }
+        }
+
         bot->UpdateAllowedPositionZ(x, y, z);
+    }
 
     return WorldPosition(bot->GetMapId(), x, y, z).isValid();
 }
@@ -3710,7 +3743,10 @@ void FriendBotController::MaybeSayStatus(const FriendSituation& situation)
         out << ", targetDist " << static_cast<uint32>(situation.targetDistance);
         out << ", calm " << situation.calmDowntimeSeconds << "s";
         out << ", " << BalanceName(situation.balance);
-        out << ", targets " << static_cast<uint32>(situation.possibleTargetsCount) << "]";
+        out << ", targets " << static_cast<uint32>(situation.possibleTargetsCount);
+        out << ", town " << (situation.inTown ? "y" : "n");
+        out << ", vendor " << (situation.nearbyVendor ? "y" : "n");
+        out << ", repair " << (situation.nearbyRepair ? "y" : "n") << "]";
         if (situation.crowdControlledTargets)
             out << " [cc " << static_cast<uint32>(situation.crowdControlledTargets) << "]";
         if (situation.hasCreatureLoot)
