@@ -159,6 +159,13 @@ namespace
             StartsWith(action, "move for spell:");
     }
 
+    bool IsRelaxedFriendMovementAction(const std::string& action)
+    {
+        return action == "move near leader" ||
+            action == "stay close" ||
+            action == "idle orbit";
+    }
+
     std::string Trim(std::string value)
     {
         while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())))
@@ -848,10 +855,11 @@ FriendSituation FriendBotController::BuildSituation()
     UpdatePartyHeading(situation, leader);
 
     const time_t now = time(nullptr);
+    const bool relaxedFriendMovement = sServerFacade.isMoving(bot) && IsRelaxedFriendMovementAction(lastAction);
     const bool busyPlanningState = situation.inCombat || situation.partyInCombat || situation.hasAttackers ||
         situation.travelTargetPreparing || situation.travelTargetTraveling ||
         (situation.travelTargetActive && !situation.travelTargetWorking) ||
-        sServerFacade.isMoving(bot);
+        (sServerFacade.isMoving(bot) && !relaxedFriendMovement);
     if (busyPlanningState || !lastPlanningBusyAt)
         lastPlanningBusyAt = now;
 
@@ -929,9 +937,14 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
     if (ShouldLootNow(situation, localPartyInCombat))
         return FriendIntent::LootNearby;
 
+    const bool resupplyInProgress = resupplyTravelRequested ||
+        situation.travelTargetPreparing || situation.travelTargetTraveling ||
+        (situation.travelTargetActive && !situation.travelTargetWorking);
+    const bool townAccessNearby = situation.inTown || situation.nearbyVendor || situation.nearbyRepair;
+
     if (!situation.inCombat && !localPartyInCombat && (situation.damagedPartyMembers == 0 || !partyNearby) &&
         NeedsTownChores(situation) && IsSafeForTownChores(situation) &&
-        (mode == FriendMode::Solo || situation.inTown || situation.nearbyVendor || situation.nearbyRepair))
+        (command == FriendCommand::Shop || townAccessNearby || resupplyInProgress))
         return FriendIntent::Resupply;
 
     if (!situation.inCombat && !localPartyInCombat && (situation.damagedPartyMembers == 0 || !partyNearby))
@@ -2723,7 +2736,15 @@ bool FriendBotController::ExecuteLoot(const FriendSituation& situation, bool all
     }
 
     WorldObject* lootWorldObject = lootTarget.GetWorldObject(ai->GetBot());
-    if (lootWorldObject && sServerFacade.GetDistance2d(ai->GetBot(), lootWorldObject) <= INTERACTION_DISTANCE)
+    if (!lootWorldObject)
+    {
+        if (availableLoot)
+            availableLoot->Remove(lootTarget.guid);
+        context->GetValue<LootObject>("loot target")->Set(LootObject());
+        return false;
+    }
+
+    if (sServerFacade.GetDistance2d(ai->GetBot(), lootWorldObject) <= INTERACTION_DISTANCE)
     {
         if (TryAction("open loot", "friend loot") == FriendExecutionResult::Done)
             return true;
@@ -2998,7 +3019,12 @@ bool FriendBotController::NormalizeFriendMovePosition(float& x, float& y, float&
             }
         }
 
-        bot->UpdateAllowedPositionZ(x, y, z);
+        WorldPosition groundPosition(bot->GetMapId(), x, y, z);
+        float ground = groundPosition.getHeight(false);
+        if (ground > -200000.0f)
+            z = ground;
+        else
+            bot->UpdateAllowedPositionZ(x, y, z);
     }
 
     return WorldPosition(bot->GetMapId(), x, y, z).isValid();
@@ -3582,6 +3608,9 @@ FriendIdleGoal FriendBotController::SelectIdleGoal(const FriendSituation& situat
         situation.botHealth >= sPlayerbotAIConfig.almostFullHealth &&
         situation.lowestPartyHealth >= sPlayerbotAIConfig.almostFullHealth &&
         situation.damagedPartyMembers == 0;
+    const bool needsTownChores = NeedsTownChores(situation);
+    const bool urgentTownChores = command == FriendCommand::Shop ||
+        situation.shouldRepair || situation.shouldSell || situation.shouldBuy;
 
     if (mode == FriendMode::Dungeon)
     {
@@ -3593,23 +3622,23 @@ FriendIdleGoal FriendBotController::SelectIdleGoal(const FriendSituation& situat
         goals.push_back({ FriendIdleGoal::OrbitLeader, 4 + socialBias / 5 });
         goals.push_back({ FriendIdleGoal::Loiter, 3 });
 
-        if (NeedsTownChores(situation) && IsSafeForTownChores(situation))
-            goals.push_back({ FriendIdleGoal::Resupply, 100 });
+        if (needsTownChores && IsSafeForTownChores(situation))
+            goals.push_back({ FriendIdleGoal::Resupply, urgentTownChores ? 120u : 55u });
 
         if (situation.possibleTargetsCount > 0 && situation.botMana >= sPlayerbotAIConfig.lowMana)
             goals.push_back({ FriendIdleGoal::GrindNearby, 110 + grindBias + boredom + forwardBias / 4 });
-        else if (!NeedsTownChores(situation) && situation.botHealth >= sPlayerbotAIConfig.almostFullHealth &&
+        else if (!urgentTownChores && situation.botHealth >= sPlayerbotAIConfig.almostFullHealth &&
             situation.botMana >= sPlayerbotAIConfig.lowMana)
             goals.push_back({ FriendIdleGoal::TravelToGrind, 100 + grindBias + boredom + forwardBias / 3 });
 
         if (canGather)
         {
             goals.push_back({ FriendIdleGoal::GatherNearby, 40 + gatherBias + boredom / 2 });
-            if (!NeedsTownChores(situation))
+            if (!urgentTownChores)
                 goals.push_back({ FriendIdleGoal::TravelToGather, 40 + gatherBias / 2 + boredom / 2 + forwardBias / 4 });
         }
 
-        if (!NeedsTownChores(situation) && !situation.possibleTargetsCount)
+        if (!urgentTownChores && !situation.possibleTargetsCount)
             goals.push_back({ FriendIdleGoal::ExploreNearby, 35 + boredom / 2 + forwardBias / 3 });
     }
     else
@@ -3617,19 +3646,19 @@ FriendIdleGoal FriendBotController::SelectIdleGoal(const FriendSituation& situat
         goals.push_back({ FriendIdleGoal::OrbitLeader, 30 + socialBias / 2 });
         goals.push_back({ FriendIdleGoal::Loiter, 15 });
 
-        if (NeedsTownChores(situation) && IsSafeForTownChores(situation))
+        if (needsTownChores && IsSafeForTownChores(situation))
             goals.push_back({ FriendIdleGoal::Resupply, 45 });
 
         if (canGather && situation.botMana >= sPlayerbotAIConfig.mediumMana)
         {
             goals.push_back({ FriendIdleGoal::GatherNearby, 28 + gatherBias + boredom / 3 });
-            if (!NeedsTownChores(situation))
+            if (!urgentTownChores)
                 goals.push_back({ FriendIdleGoal::TravelToGather, 8 + gatherBias / 4 + boredom / 5 + forwardBias / 8 });
         }
 
         if (partyComfortable && situation.possibleTargetsCount > 0 && situation.botMana >= sPlayerbotAIConfig.mediumMana)
             goals.push_back({ FriendIdleGoal::GrindNearby, 42 + grindBias + boredom / 2 + forwardBias / 6 });
-        else if (partyComfortable && !NeedsTownChores(situation) &&
+        else if (partyComfortable && !urgentTownChores &&
             situation.botMana >= sPlayerbotAIConfig.mediumMana)
         {
             goals.push_back({ FriendIdleGoal::TravelToGrind, 10 + grindBias / 3 + boredom / 5 + forwardBias / 8 });
