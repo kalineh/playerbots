@@ -671,6 +671,7 @@ FriendSituation FriendBotController::BuildSituation()
         if (IsHostileTarget(ai, rtiCcTarget))
             situation.rtiCcTargetGuid = rtiCcTarget->GetObjectGuid();
 
+        int32 bestPartyThreatScore = 0;
         std::list<ObjectGuid> possibleTargets = context->GetValue<std::list<ObjectGuid> >("possible attack targets")->Get();
         for (std::list<ObjectGuid>::const_iterator itr = possibleTargets.begin(); itr != possibleTargets.end(); ++itr)
         {
@@ -693,18 +694,22 @@ FriendSituation FriendBotController::BuildSituation()
 
             Player* playerVictim = dynamic_cast<Player*>(victim);
             if (playerVictim && ai->IsHeal(playerVictim))
-            {
                 situation.healerPartyHasThreat = true;
-                if (!situation.vulnerablePartyAttackerGuid)
-                    situation.vulnerablePartyAttackerGuid = unit->GetObjectGuid();
-            }
 
-            if (HealthPercent(ai, victim) < sPlayerbotAIConfig.mediumHealth)
+            int32 partyThreatScore = PartyThreatScore(victim);
+            if (HealthPercent(ai, unit) < 35)
+                partyThreatScore += 10;
+
+            if (partyThreatScore > 0)
             {
                 situation.vulnerablePartyHasThreat = true;
-                if (!situation.vulnerablePartyAttackerGuid ||
-                    HealthPercent(ai, unit) < HealthPercent(ai, ai->GetUnit(situation.vulnerablePartyAttackerGuid)))
+                if (!situation.vulnerablePartyAttackerGuid || partyThreatScore > bestPartyThreatScore ||
+                    (partyThreatScore == bestPartyThreatScore &&
+                        HealthPercent(ai, unit) < HealthPercent(ai, ai->GetUnit(situation.vulnerablePartyAttackerGuid))))
+                {
                     situation.vulnerablePartyAttackerGuid = unit->GetObjectGuid();
+                    bestPartyThreatScore = partyThreatScore;
+                }
             }
         }
 
@@ -1258,6 +1263,13 @@ Unit* FriendBotController::SelectDamageTarget(const FriendSituation& situation, 
     };
 
     Unit* target = nullptr;
+    if (CanProtectPartyWithThreat(situation) && (situation.vulnerablePartyHasThreat || situation.healerPartyHasThreat))
+    {
+        target = ai->GetUnit(situation.vulnerablePartyAttackerGuid);
+        if (Unit* selected = consider(target, situation.healerPartyHasThreat ? "protect-healer" : "protect-party"))
+            return selected;
+    }
+
     if (ai->GetBot()->GetGroup())
     {
         target = GetRaidIconTarget(FRIEND_RTI_SKULL);
@@ -1971,6 +1983,69 @@ bool FriendBotController::PrefersSelfDefenseTarget(const FriendSituation& situat
     }
 }
 
+bool FriendBotController::CanProtectPartyWithThreat(const FriendSituation& situation) const
+{
+    if (!ai || !ai->GetBot())
+        return false;
+
+    if (situation.tankish)
+        return true;
+
+    switch (ai->GetBot()->getClass())
+    {
+        case CLASS_WARRIOR:
+        case CLASS_PALADIN:
+        case CLASS_DRUID:
+            return true;
+#ifdef MANGOSBOT_TWO
+        case CLASS_DEATH_KNIGHT:
+            return true;
+#endif
+        default:
+            return false;
+    }
+}
+
+int32 FriendBotController::PartyThreatScore(Unit* victim) const
+{
+    if (!ai || !ai->GetBot() || !victim || victim == ai->GetBot() || !IsFriendlyTarget(ai, victim))
+        return 0;
+
+    Player* bot = ai->GetBot();
+    int32 score = 0;
+
+    Player* playerVictim = dynamic_cast<Player*>(victim);
+    if (playerVictim && ai->IsHeal(playerVictim))
+        score += 90;
+
+    const uint8 victimHealthPct = HealthPercent(ai, victim);
+    if (victimHealthPct < sPlayerbotAIConfig.lowHealth)
+        score += 90;
+    else if (victimHealthPct < sPlayerbotAIConfig.mediumHealth)
+        score += 65;
+
+    if (!playerVictim)
+        return score;
+
+    const uint32 botMaxHealth = bot->GetMaxHealth();
+    const uint32 victimMaxHealth = victim->GetMaxHealth();
+    if (botMaxHealth && victimMaxHealth)
+    {
+        if (static_cast<uint64>(victimMaxHealth) * 100 < static_cast<uint64>(botMaxHealth) * 80)
+            score += 45;
+        else if (static_cast<uint64>(victimMaxHealth) * 100 < static_cast<uint64>(botMaxHealth) * 95)
+            score += 15;
+    }
+
+    const uint32 botHealth = bot->GetHealth();
+    const uint32 victimHealth = victim->GetHealth();
+    if (botHealth && victimHealth &&
+        static_cast<uint64>(victimHealth) * 100 < static_cast<uint64>(botHealth) * 75)
+        score += 30;
+
+    return score;
+}
+
 bool FriendBotController::CanClassHeal() const
 {
     if (!ai || !ai->GetBot())
@@ -2189,6 +2264,12 @@ bool FriendBotController::TryCatalogDamage(const FriendSituation& situation, con
     std::vector<Candidate> candidates;
     const uint8 targetHealth = HealthPercent(ai, target);
     const bool targetCasting = target->IsNonMeleeSpellCasted(false);
+    const bool partyPeelTarget = target->GetObjectGuid() == situation.vulnerablePartyAttackerGuid &&
+        (situation.vulnerablePartyHasThreat || situation.healerPartyHasThreat);
+    const bool threatPeel = partyPeelTarget &&
+        CanProtectPartyWithThreat(situation) &&
+        target->GetVictim() &&
+        target->GetVictim() != ai->GetBot();
 
     for (const FriendAbility& ability : abilityCatalog.GetAbilities())
     {
@@ -2225,12 +2306,21 @@ bool FriendBotController::TryCatalogDamage(const FriendSituation& situation, con
             score += 12;
         if (ability.Has(FRIEND_ABILITY_MELEE) && !situation.ranged)
             score += 12;
-        if (ability.Has(FRIEND_ABILITY_THREAT) && situation.tankish)
-            score += 25;
+        if (ability.Has(FRIEND_ABILITY_THREAT))
+        {
+            if (situation.tankish || CanProtectPartyWithThreat(situation))
+                score += 25;
+            if (threatPeel)
+                score += situation.healerPartyHasThreat ? 140 : 110;
+        }
+        if (threatPeel && ability.Has(FRIEND_ABILITY_DIRECT_DAMAGE))
+            score += 15;
         if (ability.Has(FRIEND_ABILITY_AOE) && situation.possibleTargetsCount > 1)
-            score += 12;
+            score += threatPeel ? 25 : 12;
         if (ability.Has(FRIEND_ABILITY_DAMAGE_COOLDOWN))
             score += 20;
+        if (threatPeel && ability.Has(FRIEND_ABILITY_DOT) && !ability.Has(FRIEND_ABILITY_THREAT))
+            score -= 25;
         score -= ManaSpendScorePenalty(situation, ability);
 
         if (score > 0)
@@ -4284,7 +4374,9 @@ std::vector<std::string> FriendBotController::PullActions(const FriendSituation&
 std::vector<std::string> FriendBotController::DamageActions(const FriendSituation& situation) const
 {
     std::vector<std::string> actions;
-    if (situation.tankish)
+    const bool partyPeel = CanProtectPartyWithThreat(situation) &&
+        (situation.vulnerablePartyHasThreat || situation.healerPartyHasThreat);
+    if (situation.tankish || partyPeel)
         AddActions(actions, { "taunt", "hand of reckoning", "righteous defense", "growl", "dark command" });
 
     const bool preferFreeDamage = PreferFreeDamage(situation);
@@ -4294,6 +4386,8 @@ std::vector<std::string> FriendBotController::DamageActions(const FriendSituatio
     switch (ai->GetBot()->getClass())
     {
         case CLASS_WARRIOR:
+            if (partyPeel)
+                AddActions(actions, { "challenging shout", "battle shout taunt", "sunder armor", "revenge", "thunder clap" });
             AddActions(actions, {
                 "pummel", "shield bash", "charge", "intercept", "bloodrage", "battle shout",
                 "demoralizing shout"
