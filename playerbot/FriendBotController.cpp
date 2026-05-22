@@ -27,7 +27,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v22";
+    const char* FRIEND_BOT_VERSION = "v23";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -5510,7 +5510,8 @@ Item* FriendBotController::FindBestTradeItem(const std::string& fragment) const
         if (!item || item->IsInTrade() || !item->CanBeTraded() || !item->GetProto())
             return;
 
-        std::string searchable = item->GetProto()->Name1 + " " + ChatHelper::formatItem(item);
+        std::string itemName = item->GetProto()->Name1 ? item->GetProto()->Name1 : "";
+        std::string searchable = itemName + " " + ChatHelper::formatItem(item);
         std::transform(searchable.begin(), searchable.end(), searchable.begin(),
             [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
@@ -5589,7 +5590,8 @@ bool FriendBotController::TradeMatchingItem(Player* requester, const std::string
     }
 
     response = item->IsInTrade() ? "Trading " + itemLink + "." : "Opening trade for " + itemLink + ".";
-    SetResult(lastIntent, "trade:" + item->GetProto()->Name1, FriendExecutionResult::Done);
+    std::string itemName = item->GetProto()->Name1 ? item->GetProto()->Name1 : "";
+    SetResult(lastIntent, "trade:" + itemName, FriendExecutionResult::Done);
     return true;
 }
 
