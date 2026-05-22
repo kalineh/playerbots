@@ -27,7 +27,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v31";
+    const char* FRIEND_BOT_VERSION = "v32";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -65,6 +65,8 @@ namespace
     const int32 FRIEND_ABILITY_TOP_ROLL_WINDOW = 25;
     const int32 FRIEND_INTENT_FAILURE_DECAY_PER_SECOND = 6;
     const int32 FRIEND_INTENT_FAILURE_MAX_PENALTY = 240;
+    const uint32 FRIEND_TRADE_TIMEOUT_SECONDS = 45;
+    const float FRIEND_TRADE_MAX_APPROACH_DISTANCE = 80.0f;
 
     uint32 FriendVendorNpcFlags()
     {
@@ -507,6 +509,7 @@ namespace
             action == "stand near travel target" ||
             action == "move to loot" ||
             action == "move to melee" ||
+            action == "move for trade" ||
             action == "ranged spacing" ||
             StartsWith(action, "move for spell:");
     }
@@ -618,6 +621,10 @@ void FriendBotController::Reset()
     lastPlanningBusyAt = time(nullptr);
     lastActivityBark.clear();
     nextActivityBarkAt = 0;
+    pendingTradeRequesterGuid = ObjectGuid();
+    pendingTradeFragment.clear();
+    pendingTradeUntil = 0;
+    nextPendingTradeAt = 0;
     lastLeaderHeadingGuid = ObjectGuid();
     lastLeaderHeadingMap = 0;
     lastLeaderHeadingAt = 0;
@@ -656,6 +663,13 @@ void FriendBotController::RunTick(bool minimal)
     FriendSituation situation = BuildSituation();
     lastSituation = situation;
     ResetTemporaryCommandIfSatisfied(situation);
+
+    if (TryPendingTrade(situation))
+    {
+        MaybeSayStatus(situation);
+        MaybeProposeTownChores(situation);
+        return;
+    }
 
     if (TryEquipUpgrades(situation))
     {
@@ -697,6 +711,7 @@ bool FriendBotController::HandleCommand(const std::string& rawCommand, Player* r
         taskTravelRequested = false;
         taskTravelPurpose = 0;
         nextResupplyAttemptAt = 0;
+        ClearPendingTrade();
         ClearProposal();
     };
 
@@ -979,6 +994,8 @@ std::string FriendBotController::FormatReport() const
     std::ostringstream out;
     out << "friend " << FRIEND_BOT_VERSION << ": mode=" << ModeName(mode);
     out << ", command=" << CommandName(command);
+    if (pendingTradeRequesterGuid)
+        out << ", trade=pending";
     out << ", task=" << TaskName(executionTask);
     out << ", proposal=" << ProposalName(pendingProposal);
     out << ", verbosity=" << VerbosityName(verbosity);
@@ -6134,7 +6151,7 @@ Item* FriendBotController::FindBestTradeItem(const std::string& fragment) const
 
 bool FriendBotController::TradeMatchingItem(Player* requester, const std::string& fragment, std::string& response)
 {
-    if (!ai || !requester)
+    if (!ai || !ai->GetBot() || !requester)
     {
         response = "I can't trade right now.";
         return true;
@@ -6154,27 +6171,225 @@ bool FriendBotController::TradeMatchingItem(Player* requester, const std::string
     }
 
     const std::string itemLink = ChatHelper::formatItem(item);
-    if (!ai->GetBot() || ai->GetBot()->GetMapId() != requester->GetMapId() ||
-        sServerFacade.GetDistance2d(ai->GetBot(), requester) > INTERACTION_DISTANCE)
+    Player* bot = ai->GetBot();
+    if (bot->GetTrader() && bot->GetTrader() != requester)
+    {
+        response = "I'm already trading with someone else.";
+        return true;
+    }
+
+    if (bot->GetMapId() != requester->GetMapId())
+    {
+        response = "I have " + itemLink + ", but we're not in the same place.";
+        return true;
+    }
+
+    const float distance = sServerFacade.GetDistance2d(bot, requester);
+    if (distance > FRIEND_TRADE_MAX_APPROACH_DISTANCE)
     {
         response = "I have " + itemLink + ", but I'm too far away to trade.";
         return true;
     }
 
-    bool started = ai->DoSpecificAction("trade", Event("friend command", itemLink, requester), true);
-    if (started && ai->GetBot() && ai->GetBot()->GetTrader() == requester)
-        ai->DoSpecificAction("trade", Event("friend command", itemLink, requester), true);
+    pendingTradeRequesterGuid = requester->GetObjectGuid();
+    pendingTradeFragment = fragment;
+    pendingTradeUntil = time(nullptr) + FRIEND_TRADE_TIMEOUT_SECONDS;
+    nextPendingTradeAt = 0;
+    ClearExecutionState();
 
-    if (!started)
+    response = distance > INTERACTION_DISTANCE ?
+        "I'll come trade " + itemLink + "." :
+        "Opening trade for " + itemLink + ".";
+    return true;
+}
+
+bool FriendBotController::TryPendingTrade(const FriendSituation& situation)
+{
+    (void)situation;
+    if (!pendingTradeRequesterGuid)
+        return false;
+
+    if (!ai || !ai->GetBot())
     {
-        response = "I couldn't start that trade.";
+        ClearPendingTrade();
+        return false;
+    }
+
+    const time_t now = time(nullptr);
+    Player* bot = ai->GetBot();
+    Player* requester = sObjectMgr.GetPlayer(pendingTradeRequesterGuid);
+    if (!requester || !requester->IsInWorld())
+    {
+        SetResult(FriendIntent::FollowOrIdle, "trade blocked:player gone", FriendExecutionResult::BlockedNotPossible);
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        ClearPendingTrade();
         return true;
     }
 
-    response = item->IsInTrade() ? "Trading " + itemLink + "." : "Opening trade for " + itemLink + ".";
-    std::string itemName = item->GetProto()->Name1 ? item->GetProto()->Name1 : "";
-    SetResult(lastIntent, "trade:" + itemName, FriendExecutionResult::Done);
+    if (now > pendingTradeUntil)
+    {
+        ai->TellPlayerNoFacing(requester, "Trade timed out.", PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
+        SetResult(FriendIntent::FollowOrIdle, "trade timed out", FriendExecutionResult::BlockedNotUseful);
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        ClearPendingTrade();
+        return true;
+    }
+
+    if (now < nextPendingTradeAt)
+    {
+        SetResult(FriendIntent::FollowOrIdle, "trade pending", FriendExecutionResult::Done);
+        ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
+        return true;
+    }
+
+    Item* item = FindBestTradeItem(pendingTradeFragment);
+    if (!item || !item->GetProto())
+    {
+        ai->TellPlayerNoFacing(requester, "I don't have that tradable item anymore.",
+            PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
+        SetResult(FriendIntent::FollowOrIdle, "trade blocked:no item", FriendExecutionResult::BlockedNotUseful);
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        ClearPendingTrade();
+        return true;
+    }
+
+    std::string itemName = item->GetProto()->Name1 ? item->GetProto()->Name1 : "item";
+    if (bot->GetTrader() && bot->GetTrader() != requester)
+    {
+        ai->TellPlayerNoFacing(requester, "I'm already trading with someone else.",
+            PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
+        SetResult(FriendIntent::FollowOrIdle, "trade blocked:busy", FriendExecutionResult::BlockedNotUseful);
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        ClearPendingTrade();
+        return true;
+    }
+
+    if (requester->GetTrader() && requester->GetTrader() != bot)
+    {
+        ai->TellPlayerNoFacing(requester, "You're already trading with someone else.",
+            PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
+        SetResult(FriendIntent::FollowOrIdle, "trade blocked:requester busy", FriendExecutionResult::BlockedNotUseful);
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        ClearPendingTrade();
+        return true;
+    }
+
+    if (bot->GetMapId() != requester->GetMapId())
+    {
+        ai->TellPlayerNoFacing(requester, "We're not in the same place anymore.",
+            PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
+        SetResult(FriendIntent::FollowOrIdle, "trade blocked:wrong map", FriendExecutionResult::BlockedNotPossible);
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        ClearPendingTrade();
+        return true;
+    }
+
+    const float distance = sServerFacade.GetDistance2d(bot, requester);
+    if (distance > FRIEND_TRADE_MAX_APPROACH_DISTANCE)
+    {
+        ai->TellPlayerNoFacing(requester, "You're too far away to trade.",
+            PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
+        SetResult(FriendIntent::FollowOrIdle, "trade blocked:too far", FriendExecutionResult::BlockedNotPossible);
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        ClearPendingTrade();
+        return true;
+    }
+
+    const float desiredDistance = std::max(sPlayerbotAIConfig.contactDistance + 1.0f, INTERACTION_DISTANCE * 0.5f);
+    if (distance > desiredDistance || !bot->IsWithinLOSInMap(requester, true))
+    {
+        lastIntent = FriendIntent::FollowOrIdle;
+        if (MoveToUnitRange(requester, desiredDistance, "move for trade"))
+            return true;
+
+        SetResult(FriendIntent::FollowOrIdle, "move for trade failed", FriendExecutionResult::Failed);
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        nextPendingTradeAt = now + 2;
+        return true;
+    }
+
+    ClearFriendMovement(true);
+    if (!bot->GetTrader())
+    {
+        WorldPacket packet(CMSG_INITIATE_TRADE);
+        packet << requester->GetObjectGuid();
+        bot->GetSession()->HandleInitiateTradeOpcode(packet);
+        SetResult(FriendIntent::FollowOrIdle, "open trade:" + itemName, FriendExecutionResult::Done);
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        nextPendingTradeAt = now + 1;
+        return true;
+    }
+
+    TradeData* trade = bot->GetTradeData();
+    if (!trade)
+    {
+        SetResult(FriendIntent::FollowOrIdle, "trade waiting", FriendExecutionResult::Done);
+        ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
+        nextPendingTradeAt = now + 1;
+        return true;
+    }
+
+    bool alreadyInTrade = item->IsInTrade();
+    for (uint8 slot = 0; slot < TRADE_SLOT_TRADED_COUNT && !alreadyInTrade; ++slot)
+        alreadyInTrade = trade->GetItem(TradeSlots(slot)) == item;
+
+    if (!alreadyInTrade && !PutItemInTrade(item))
+    {
+        SetResult(FriendIntent::FollowOrIdle, "trade item failed:" + itemName, FriendExecutionResult::Failed);
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        nextPendingTradeAt = now + 2;
+        return true;
+    }
+
+    ai->TellPlayerNoFacing(requester, "Trading " + ChatHelper::formatItem(item) + ".",
+        PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
+    SetResult(FriendIntent::FollowOrIdle, "trade item:" + itemName, FriendExecutionResult::Done);
+    ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+    ClearPendingTrade();
     return true;
+}
+
+bool FriendBotController::PutItemInTrade(Item* item)
+{
+    if (!ai || !ai->GetBot() || !item || !item->CanBeTraded())
+        return false;
+
+    TradeData* trade = ai->GetBot()->GetTradeData();
+    if (!trade)
+        return false;
+
+    for (uint8 slot = 0; slot < TRADE_SLOT_TRADED_COUNT; ++slot)
+    {
+        if (trade->GetItem(TradeSlots(slot)) == item)
+            return true;
+    }
+
+    int8 tradeSlot = -1;
+    for (uint8 slot = 0; slot < TRADE_SLOT_TRADED_COUNT; ++slot)
+    {
+        if (!trade->GetItem(TradeSlots(slot)))
+        {
+            tradeSlot = slot;
+            break;
+        }
+    }
+
+    if (tradeSlot < 0)
+        return false;
+
+    WorldPacket packet(CMSG_SET_TRADE_ITEM, 3);
+    packet << static_cast<uint8>(tradeSlot) << static_cast<uint8>(item->GetBagSlot())
+        << static_cast<uint8>(item->GetSlot());
+    ai->GetBot()->GetSession()->HandleSetTradeItemOpcode(packet);
+    return true;
+}
+
+void FriendBotController::ClearPendingTrade()
+{
+    pendingTradeRequesterGuid = ObjectGuid();
+    pendingTradeFragment.clear();
+    pendingTradeUntil = 0;
+    nextPendingTradeAt = 0;
 }
 
 void FriendBotController::PrintHelp(Player* requester) const

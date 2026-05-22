@@ -277,6 +277,9 @@ namespace ai
         uint8 EquippedBagSlots() const;
         Item* FindBestTradeItem(const std::string& fragment) const;
         bool TradeMatchingItem(Player* requester, const std::string& fragment, std::string& response);
+        bool TryPendingTrade(const FriendSituation& situation);
+        bool PutItemInTrade(Item* item);
+        void ClearPendingTrade();
         void MaybeProposeTownChores(const FriendSituation& situation);
         void ClearProposal();
         bool ExecuteTaskIntent(FriendIntent intent, const FriendSituation& situation);
@@ -370,6 +373,10 @@ namespace ai
         time_t lastPlanningBusyAt = 0;
         std::string lastActivityBark;
         time_t nextActivityBarkAt = 0;
+        ObjectGuid pendingTradeRequesterGuid;
+        std::string pendingTradeFragment;
+        time_t pendingTradeUntil = 0;
+        time_t nextPendingTradeAt = 0;
         ObjectGuid lastLeaderHeadingGuid;
         uint32 lastLeaderHeadingMap = 0;
         time_t lastLeaderHeadingAt = 0;
