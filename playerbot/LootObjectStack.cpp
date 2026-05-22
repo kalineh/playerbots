@@ -1,5 +1,6 @@
 #include "LootObjectStack.h"
 #include "playerbot.h"
+#include "PlayerbotAI.h"
 #include "playerbot/PlayerbotAIConfig.h"
 #include "playerbot/ServerFacade.h"
 #include "playerbot/strategy/values/SharedValueContext.h"
@@ -355,7 +356,8 @@ LootObject LootObjectStack::GetLoot(float maxDistance)
 
 std::vector<LootObject> LootObjectStack::OrderByDistance(float maxDistance)
 {
-    availableLoot.shrink(time(0) - 30);
+    const time_t retentionSeconds = bot && bot->GetPlayerbotAI() && bot->GetPlayerbotAI()->IsFriendMode() ? 120 : 30;
+    availableLoot.shrink(time(0) - retentionSeconds);
 
     std::map<float, LootObject> sortedMap;
     LootTargetList safeCopy(availableLoot);

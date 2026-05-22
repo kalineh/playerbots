@@ -145,6 +145,44 @@ namespace
         return value.find(needle) != std::string::npos;
     }
 
+    bool IsComboPointSpender(const std::string& name)
+    {
+        return Contains(name, "eviscerate") ||
+            Contains(name, "rupture") ||
+            Contains(name, "slice and dice") ||
+            Contains(name, "kidney shot") ||
+            Contains(name, "rip") ||
+            Contains(name, "ferocious bite") ||
+            Contains(name, "maim") ||
+            Contains(name, "savage roar");
+    }
+
+    bool IsComboPointBuilder(const std::string& name)
+    {
+        return Contains(name, "sinister strike") ||
+            Contains(name, "backstab") ||
+            Contains(name, "mutilate") ||
+            Contains(name, "hemorrhage") ||
+            Contains(name, "shred") ||
+            Contains(name, "mangle (cat)") ||
+            Contains(name, "rake") ||
+            Contains(name, "claw");
+    }
+
+    bool IsFriendMovementAction(const std::string& action)
+    {
+        return action == "move near leader" ||
+            action == "come" ||
+            action == "stay close" ||
+            action == "idle orbit" ||
+            action == "recover position" ||
+            action == "move to travel target" ||
+            action == "move to loot" ||
+            action == "move to melee" ||
+            action == "ranged spacing" ||
+            StartsWith(action, "move for spell:");
+    }
+
     std::string Trim(std::string value)
     {
         while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())))
@@ -684,10 +722,27 @@ FriendSituation FriendBotController::BuildSituation()
             }
         }
 
-        Unit* target = GetContextValue<Unit*>(context, "current target", nullptr);
-        if (!target)
-            target = GetContextValue<Unit*>(context, "dps target", nullptr);
-        if (target && target->IsInWorld() && target->GetMapId() == bot->GetMapId() && !sServerFacade.UnitIsDead(target))
+        Unit* currentTarget = GetContextValue<Unit*>(context, "current target", nullptr);
+        if (currentTarget && !IsValidFriendDamageTarget(currentTarget, true))
+        {
+            context->GetValue<Unit*>("current target")->Set(nullptr);
+            currentTarget = nullptr;
+        }
+
+        Unit* dpsTarget = GetContextValue<Unit*>(context, "dps target", nullptr);
+        if (dpsTarget && !IsValidFriendDamageTarget(dpsTarget, true))
+            dpsTarget = nullptr;
+
+        ObjectGuid attackTargetGuid = GetContextValue<ObjectGuid>(context, "attack target", ObjectGuid());
+        if (attackTargetGuid)
+        {
+            Unit* attackTarget = ai->GetUnit(attackTargetGuid);
+            if (!IsValidFriendDamageTarget(attackTarget, true))
+                context->GetValue<ObjectGuid>("attack target")->Set(ObjectGuid());
+        }
+
+        Unit* target = currentTarget ? currentTarget : dpsTarget;
+        if (target)
         {
             situation.hasTarget = true;
             situation.targetDistance = sServerFacade.GetDistance2d(bot, target);
@@ -2340,6 +2395,10 @@ bool FriendBotController::TryCatalogDamage(const FriendSituation& situation, con
         CanProtectPartyWithThreat(situation) &&
         target->GetVictim() &&
         target->GetVictim() != ai->GetBot();
+    const bool usesComboPoints = ai && ai->GetBot() &&
+        (ai->GetBot()->getClass() == CLASS_ROGUE || ai->GetBot()->getClass() == CLASS_DRUID);
+    const uint8 comboPoints = usesComboPoints && target->GetObjectGuid() == ai->GetBot()->GetComboTargetGuid() ?
+        ai->GetBot()->GetComboPoints() : 0;
 
     for (const FriendAbility& ability : abilityCatalog.GetAbilities())
     {
@@ -2391,6 +2450,26 @@ bool FriendBotController::TryCatalogDamage(const FriendSituation& situation, con
             score += 20;
         if (threatPeel && ability.Has(FRIEND_ABILITY_DOT) && !ability.Has(FRIEND_ABILITY_THREAT))
             score -= 25;
+        if (usesComboPoints)
+        {
+            const bool comboSpender = IsComboPointSpender(ability.lowerName);
+            const bool comboBuilder = IsComboPointBuilder(ability.lowerName);
+            if (comboSpender)
+            {
+                if (!comboPoints)
+                    continue;
+
+                score += static_cast<int32>(comboPoints) * 14;
+                if (comboPoints < 3 && targetHealth > 30)
+                    score -= 45;
+                if (comboPoints >= 4 || targetHealth < 30)
+                    score += 20;
+            }
+            else if (comboBuilder)
+            {
+                score += comboPoints < 5 ? 10 : -55;
+            }
+        }
         score -= ManaSpendScorePenalty(situation, ability);
 
         if (score > 0)
@@ -4235,11 +4314,10 @@ void FriendBotController::ClearFriendMovement(bool includePointMove)
         return;
 
     MovementGeneratorType movementType = ai->GetBot()->GetMotionMaster()->GetCurrentMovementGeneratorType();
+    const bool friendMovement = IsFriendMovementAction(lastAction);
     if (movementType == FOLLOW_MOTION_TYPE ||
-        (includePointMove && movementType == POINT_MOTION_TYPE &&
-            (lastAction == "move near leader" || lastAction == "come" ||
-             lastAction == "stay close" || lastAction == "idle orbit" ||
-             lastAction == "recover position")))
+        (includePointMove && friendMovement &&
+            (movementType == POINT_MOTION_TYPE || movementType == CHASE_MOTION_TYPE)))
     {
         ai->StopMoving();
     }
@@ -4548,7 +4626,7 @@ std::vector<std::string> FriendBotController::SelfPreservationActions(const Frie
                 actions.push_back("fear");
             break;
         case CLASS_DRUID:
-            AddActions(actions, { "barskin", "survival instincts", "frenzied regeneration", "regrowth", "rejuvenation", "nature's grasp" });
+            AddActions(actions, { "barkskin", "survival instincts", "frenzied regeneration", "regrowth", "rejuvenation", "nature's grasp" });
             break;
 #ifdef MANGOSBOT_TWO
         case CLASS_DEATH_KNIGHT:
