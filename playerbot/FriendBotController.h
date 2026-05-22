@@ -39,7 +39,10 @@ namespace ai
         OrbitLeader,
         Resupply,
         GatherNearby,
-        GrindNearby
+        GrindNearby,
+        TravelToGrind,
+        TravelToGather,
+        ExploreNearby
     };
 
     enum class FriendVerbosity : uint8
@@ -109,6 +112,8 @@ namespace ai
         bool travelTargetActive = false;
         bool travelTargetPreparing = false;
         bool travelTargetTraveling = false;
+        bool travelTargetWorking = false;
+        uint32 travelTargetPurpose = 0;
         bool healerish = false;
         bool tankish = false;
         bool ranged = false;
@@ -164,9 +169,9 @@ namespace ai
         FriendIntent SelectIntent(const FriendSituation& situation) const;
         bool ExecuteIntent(FriendIntent intent, const FriendSituation& situation);
         bool TryActions(const std::vector<std::string>& names, const std::string& source);
-        FriendExecutionResult TryAction(const std::string& name, const std::string& source, uint8 depth = 0);
+        FriendExecutionResult TryAction(const std::string& name, const std::string& source, uint8 depth = 0, Player* owner = nullptr);
         FriendExecutionResult TryActionWithParam(const std::string& name, const std::string& param, const std::string& source);
-        bool TryPrerequisites(Action* action, const std::string& source, uint8 depth);
+        bool TryPrerequisites(Action* action, const std::string& source, uint8 depth, Player* owner);
         bool TryCatalogDamage(const FriendSituation& situation, const std::string& source);
         bool TryCatalogHeal(const FriendSituation& situation, const std::string& source);
         bool TryCatalogSupport(const FriendSituation& situation, const std::string& source);
@@ -199,13 +204,17 @@ namespace ai
         bool MoveToRecoverPosition(const FriendSituation& situation);
         bool ExecuteResupply(const FriendSituation& situation);
         bool TryTravelForResupply(const FriendSituation& situation);
-        bool MoveToResupplyTravelTarget(const FriendSituation& situation);
+        bool MoveToFriendTravelTarget(const FriendSituation& situation);
         bool IsSafeForTownChores(const FriendSituation& situation) const;
         bool NeedsTownChores(const FriendSituation& situation) const;
         bool ExecuteIdleGoal(const FriendSituation& situation);
         bool IsSafeForIdleActivity(const FriendSituation& situation) const;
         FriendIdleGoal SelectIdleGoal(const FriendSituation& situation);
         bool ExecuteCurrentIdleGoal(const FriendSituation& situation);
+        bool ExecuteIdleTravelGoal(const FriendSituation& situation, uint32 purpose, FriendIdleGoal workGoal,
+            const std::string& action, std::initializer_list<const char*> lines);
+        uint32 SelectGatherTravelPurpose() const;
+        bool HasGatherSkill() const;
         bool MoveInLeaderOrbit(const FriendSituation& situation, const std::string& action, bool urgent);
         bool PreferFreeDamage(const FriendSituation& situation) const;
         bool IsTargetSetupAction(const std::string& name) const;
@@ -263,6 +272,8 @@ namespace ai
         time_t idleGoalUntil = 0;
         time_t idleNextActionAt = 0;
         bool resupplyTravelRequested = false;
+        bool idleTravelRequested = false;
+        uint32 idleTravelPurpose = 0;
         std::string lastActivityBark;
         time_t nextActivityBarkAt = 0;
         FriendAbilityCatalog abilityCatalog;
