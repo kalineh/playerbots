@@ -2100,7 +2100,7 @@ bool FriendBotController::TryCastAbility(const FriendAbility& ability, Unit* tar
         ability.Has(FRIEND_ABILITY_BUFF_SITUATIONAL) ||
         (ability.Has(FRIEND_ABILITY_BUFF) && !ability.Has(FRIEND_ABILITY_DAMAGE) && !ability.Has(FRIEND_ABILITY_DIRECT_DAMAGE)) ||
         (ability.Has(FRIEND_ABILITY_CC) && !ability.Has(FRIEND_ABILITY_DAMAGE) && !ability.Has(FRIEND_ABILITY_DIRECT_DAMAGE));
-    if (duplicateAuraSensitive && ai->HasAura(ability.spellId, target, ability.Has(FRIEND_ABILITY_DOT) || ability.Has(FRIEND_ABILITY_CC)))
+    if (duplicateAuraSensitive && HasEquivalentAura(ability, target))
         return false;
 
     if (IsHostileTarget(ai, target) && ability.Has(FRIEND_ABILITY_MELEE))
@@ -2129,6 +2129,47 @@ bool FriendBotController::TryCastAbility(const FriendAbility& ability, Unit* tar
     SetResult(lastIntent, "spell:" + ability.name, FriendExecutionResult::Done);
     ai->SetActionDuration(spellDuration);
     return true;
+}
+
+bool FriendBotController::HasEquivalentAura(const FriendAbility& ability, Unit* target) const
+{
+    if (!ai || !target)
+        return false;
+
+    const bool ownedAura = ability.Has(FRIEND_ABILITY_DOT) || ability.Has(FRIEND_ABILITY_CC);
+    if (ai->HasAura(ability.spellId, target, ownedAura))
+        return true;
+
+    if (ability.Has(FRIEND_ABILITY_BUFF) || ability.Has(FRIEND_ABILITY_HOT) || ability.Has(FRIEND_ABILITY_SHIELD))
+    {
+        if (ai->HasAura(ability.name, target, false, ownedAura))
+            return true;
+    }
+
+    Player* bot = ai->GetBot();
+    if (!bot || target != bot)
+        return false;
+
+    if (Contains(ability.lowerName, "mage armor") ||
+        Contains(ability.lowerName, "ice armor") ||
+        Contains(ability.lowerName, "frost armor") ||
+        Contains(ability.lowerName, "molten armor"))
+        return ai->HasAnyAuraOf(target, "mage armor", "ice armor", "frost armor", "molten armor", NULL);
+
+    if (Contains(ability.lowerName, "demon skin") ||
+        Contains(ability.lowerName, "demon armor") ||
+        Contains(ability.lowerName, "fel armor"))
+        return ai->HasAnyAuraOf(target, "demon skin", "demon armor", "fel armor", NULL);
+
+    if (Contains(ability.lowerName, "aspect of the hawk") ||
+        Contains(ability.lowerName, "aspect of the viper"))
+        return ai->HasAnyAuraOf(target, "aspect of the hawk", "aspect of the viper", NULL);
+
+    if (Contains(ability.lowerName, "lightning shield") ||
+        Contains(ability.lowerName, "water shield"))
+        return ai->HasAnyAuraOf(target, "lightning shield", "water shield", NULL);
+
+    return false;
 }
 
 bool FriendBotController::TryCatalogDamage(const FriendSituation& situation, const std::string& source)
@@ -2306,7 +2347,7 @@ bool FriendBotController::TryCatalogSupport(const FriendSituation& situation, co
 
         for (Unit* target : party)
         {
-            if (!ai->HasAura(ability.spellId, target) && TryCastAbility(ability, target, source))
+            if (!HasEquivalentAura(ability, target) && TryCastAbility(ability, target, source))
                 return true;
         }
     }
@@ -3288,7 +3329,13 @@ FriendIdleGoal FriendBotController::SelectIdleGoal(const FriendSituation& situat
     uint32 socialBias = personality % 25;
     uint32 gatherBias = (personality / 7) % 30;
     uint32 grindBias = (personality / 13) % 30;
+    const uint32 boredom = std::min<uint32>(80, situation.calmDowntimeSeconds);
     const bool canGather = HasGatherSkill();
+    const bool partyComfortable = situation.leaderSafe &&
+        situation.leaderDistance <= SoftLeashDistance(situation) &&
+        situation.botHealth >= sPlayerbotAIConfig.almostFullHealth &&
+        situation.lowestPartyHealth >= sPlayerbotAIConfig.almostFullHealth &&
+        situation.damagedPartyMembers == 0;
 
     if (mode == FriendMode::Dungeon)
     {
@@ -3297,41 +3344,51 @@ FriendIdleGoal FriendBotController::SelectIdleGoal(const FriendSituation& situat
     }
     else if (mode == FriendMode::Solo)
     {
-        goals.push_back({ FriendIdleGoal::OrbitLeader, 10 + socialBias / 3 });
-        goals.push_back({ FriendIdleGoal::Loiter, 8 });
+        goals.push_back({ FriendIdleGoal::OrbitLeader, 4 + socialBias / 5 });
+        goals.push_back({ FriendIdleGoal::Loiter, 3 });
 
         if (NeedsTownChores(situation) && IsSafeForTownChores(situation))
-            goals.push_back({ FriendIdleGoal::Resupply, 70 });
+            goals.push_back({ FriendIdleGoal::Resupply, 100 });
 
         if (situation.possibleTargetsCount > 0 && situation.botMana >= sPlayerbotAIConfig.lowMana)
-            goals.push_back({ FriendIdleGoal::GrindNearby, 65 + grindBias });
+            goals.push_back({ FriendIdleGoal::GrindNearby, 110 + grindBias + boredom });
         else if (!NeedsTownChores(situation) && situation.botHealth >= sPlayerbotAIConfig.almostFullHealth &&
             situation.botMana >= sPlayerbotAIConfig.lowMana)
-            goals.push_back({ FriendIdleGoal::TravelToGrind, 55 + grindBias });
+            goals.push_back({ FriendIdleGoal::TravelToGrind, 100 + grindBias + boredom });
 
         if (canGather)
         {
-            goals.push_back({ FriendIdleGoal::GatherNearby, 25 + gatherBias });
+            goals.push_back({ FriendIdleGoal::GatherNearby, 40 + gatherBias + boredom / 2 });
             if (!NeedsTownChores(situation))
-                goals.push_back({ FriendIdleGoal::TravelToGather, 25 + gatherBias / 2 });
+                goals.push_back({ FriendIdleGoal::TravelToGather, 40 + gatherBias / 2 + boredom / 2 });
         }
 
         if (!NeedsTownChores(situation) && !situation.possibleTargetsCount)
-            goals.push_back({ FriendIdleGoal::ExploreNearby, 15 });
+            goals.push_back({ FriendIdleGoal::ExploreNearby, 35 + boredom / 2 });
     }
     else
     {
-        goals.push_back({ FriendIdleGoal::OrbitLeader, 45 + socialBias });
-        goals.push_back({ FriendIdleGoal::Loiter, 30 });
+        goals.push_back({ FriendIdleGoal::OrbitLeader, 30 + socialBias / 2 });
+        goals.push_back({ FriendIdleGoal::Loiter, 15 });
 
         if (NeedsTownChores(situation) && IsSafeForTownChores(situation))
             goals.push_back({ FriendIdleGoal::Resupply, 45 });
 
         if (canGather && situation.botMana >= sPlayerbotAIConfig.mediumMana)
-            goals.push_back({ FriendIdleGoal::GatherNearby, 12 + gatherBias });
+        {
+            goals.push_back({ FriendIdleGoal::GatherNearby, 28 + gatherBias + boredom / 3 });
+            if (!NeedsTownChores(situation))
+                goals.push_back({ FriendIdleGoal::TravelToGather, 8 + gatherBias / 4 + boredom / 5 });
+        }
 
-        if (situation.possibleTargetsCount > 0 && situation.botMana >= sPlayerbotAIConfig.mediumMana)
-            goals.push_back({ FriendIdleGoal::GrindNearby, 18 + grindBias });
+        if (partyComfortable && situation.possibleTargetsCount > 0 && situation.botMana >= sPlayerbotAIConfig.mediumMana)
+            goals.push_back({ FriendIdleGoal::GrindNearby, 42 + grindBias + boredom / 2 });
+        else if (partyComfortable && !NeedsTownChores(situation) &&
+            situation.botMana >= sPlayerbotAIConfig.mediumMana)
+        {
+            goals.push_back({ FriendIdleGoal::TravelToGrind, 10 + grindBias / 3 + boredom / 5 });
+            goals.push_back({ FriendIdleGoal::ExploreNearby, 12 + boredom / 4 });
+        }
     }
 
     uint32 total = 0;
@@ -3356,9 +3413,9 @@ FriendIdleGoal FriendBotController::SelectIdleGoal(const FriendSituation& situat
     if (mode == FriendMode::Dungeon)
         lease = urand(8, 20);
     else if (mode == FriendMode::Solo)
-        lease = urand(45, 150);
+        lease = urand(25, 80);
     else
-        lease = urand(18, 55);
+        lease = urand(12, 40);
 
     idleGoalUntil = now + lease;
     return idleGoal;
@@ -3471,6 +3528,31 @@ bool FriendBotController::ExecuteCurrentIdleGoal(const FriendSituation& situatio
             break;
 
         case FriendIdleGoal::Loiter:
+            if (mode == FriendMode::Solo && !NeedsTownChores(situation) && situation.calmDowntimeSeconds >= 15)
+            {
+                if (situation.possibleTargetsCount > 0 &&
+                    situation.botMana >= sPlayerbotAIConfig.lowMana &&
+                    TryAction("attack anything", "friend bored") == FriendExecutionResult::Done)
+                {
+                    MaybeSayActivity(situation, "bored-grind", {
+                        "I'm going to fight something nearby.",
+                        "I'll clear a few nearby."
+                    }, 45, 75);
+                    idleNextActionAt = now + urand(5, 12);
+                    return true;
+                }
+
+                if (ExecuteIdleTravelGoal(situation, FRIEND_EXPLORE_TRAVEL_PURPOSE, FriendIdleGoal::Loiter,
+                    "bored explore", {
+                        "I'm going to look around a bit.",
+                        "I'll scout around nearby."
+                    }))
+                {
+                    idleNextActionAt = now + urand(6, 14);
+                    return true;
+                }
+            }
+
             idleNextActionAt = now + urand(6, 18);
             SetResult(lastIntent, "hang out", FriendExecutionResult::Done);
             ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
@@ -3493,7 +3575,21 @@ bool FriendBotController::ExecuteCurrentIdleGoal(const FriendSituation& situatio
 bool FriendBotController::ExecuteIdleTravelGoal(const FriendSituation& situation, uint32 purpose, FriendIdleGoal workGoal,
     const std::string& action, std::initializer_list<const char*> lines)
 {
-    if (!ai || !ai->GetBot() || !ai->GetAiObjectContext() || mode != FriendMode::Solo || situation.inDungeon || purpose == 0)
+    if (!ai || !ai->GetBot() || !ai->GetAiObjectContext() || situation.inDungeon || purpose == 0)
+        return false;
+
+    const bool soloTravel = mode == FriendMode::Solo;
+    const bool partyBoredTravel = mode == FriendMode::Party &&
+        command == FriendCommand::None &&
+        situation.leaderSafe &&
+        situation.leaderDistance <= PreferredLeaderDistance(situation) &&
+        situation.botHealth >= sPlayerbotAIConfig.almostFullHealth &&
+        situation.lowestPartyHealth >= sPlayerbotAIConfig.almostFullHealth &&
+        situation.damagedPartyMembers == 0 &&
+        situation.botMana >= sPlayerbotAIConfig.mediumMana &&
+        situation.calmDowntimeSeconds >= 30 &&
+        !NeedsTownChores(situation);
+    if (!soloTravel && !partyBoredTravel)
         return false;
 
     if (situation.travelTargetWorking && situation.travelTargetPurpose == purpose)

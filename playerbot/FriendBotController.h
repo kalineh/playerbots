@@ -192,6 +192,7 @@ namespace ai
         bool TryCatalogSupport(const FriendSituation& situation, const std::string& source);
         bool TryCatalogCrowdControl(const FriendSituation& situation, const std::string& source);
         bool TryCastAbility(const FriendAbility& ability, Unit* target, const std::string& source);
+        bool HasEquivalentAura(const FriendAbility& ability, Unit* target) const;
         bool TryReachAbilityTarget(const FriendAbility& ability, Unit* target, const std::string& source);
         bool TryFreeDamage(const FriendSituation& situation, const std::string& source);
         bool TryFallbackCombat(const FriendSituation& situation, const std::string& source);
