@@ -9,6 +9,7 @@
 
 class Player;
 class PlayerbotAI;
+class Creature;
 class Unit;
 
 namespace ai
@@ -194,6 +195,10 @@ namespace ai
         bool TryActions(const std::vector<std::string>& names, const std::string& source);
         FriendExecutionResult TryAction(const std::string& name, const std::string& source, uint8 depth = 0, Player* owner = nullptr);
         FriendExecutionResult TryActionWithParam(const std::string& name, const std::string& param, const std::string& source);
+        FriendExecutionResult TryRequestTravelTarget(uint32 purpose);
+        Creature* GetNearbyServiceNpc(uint32 npcFlags) const;
+        FriendExecutionResult TryServiceAction(const std::string& name, const std::string& param, uint32 npcFlags);
+        void ClearFriendTravelTarget();
         bool TryPrerequisites(Action* action, const std::string& source, uint8 depth, Player* owner);
         bool TryCatalogDamage(const FriendSituation& situation, const std::string& source);
         bool TryCatalogHeal(const FriendSituation& situation, const std::string& source);

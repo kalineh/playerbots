@@ -25,7 +25,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v5";
+    const char* FRIEND_BOT_VERSION = "v6";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -1385,6 +1385,102 @@ FriendExecutionResult FriendBotController::TryActionWithParam(const std::string&
 
     SetResult(lastIntent, name + ":" + param, result);
     return result;
+}
+
+FriendExecutionResult FriendBotController::TryRequestTravelTarget(uint32 purpose)
+{
+    if (!ai || !ai->GetBot() || !ai->GetAiObjectContext())
+        return FriendExecutionResult::BlockedNoAction;
+
+    Player* bot = ai->GetBot();
+    AiObjectContext* context = ai->GetAiObjectContext();
+    const std::string actionName = "request travel target::" + std::to_string(purpose);
+    Action* action = context->GetAction(actionName);
+    if (!action)
+    {
+        SetResult(lastIntent, actionName, FriendExecutionResult::BlockedNoAction);
+        return FriendExecutionResult::BlockedNoAction;
+    }
+
+    TravelTarget* travelTarget = context->GetValue<TravelTarget*>("travel target")->Get();
+    if (bot->InBattleGround() || !ai->AllowActivity(TRAVEL_ACTIVITY) ||
+        !GetContextValue<bool>(context, "can move around", false) ||
+        !travelTarget || travelTarget->GetStatus() == TravelStatus::TRAVEL_STATUS_PREPARE ||
+        travelTarget->IsActive() ||
+        context->GetValue<bool>("no active travel destinations", std::to_string(purpose))->Get())
+    {
+        SetResult(lastIntent, actionName, FriendExecutionResult::BlockedNotUseful);
+        return FriendExecutionResult::BlockedNotUseful;
+    }
+
+    action->SetReaction(false);
+    action->setRelevance(ACTION_NORMAL);
+    action->MakeVerbose(false);
+
+    if (!action->isPossible())
+    {
+        SetResult(lastIntent, actionName, FriendExecutionResult::BlockedNotPossible);
+        return FriendExecutionResult::BlockedNotPossible;
+    }
+
+    Event event("", "", bot);
+    bool executed = action->Execute(event);
+    FriendExecutionResult result = executed ? FriendExecutionResult::Done : FriendExecutionResult::Failed;
+    if (executed)
+        ai->SetActionDuration(action);
+
+    SetResult(lastIntent, actionName, result);
+    return result;
+}
+
+Creature* FriendBotController::GetNearbyServiceNpc(uint32 npcFlags) const
+{
+    if (!ai || !ai->GetBot() || !ai->GetAiObjectContext())
+        return nullptr;
+
+    Player* bot = ai->GetBot();
+    std::list<ObjectGuid> npcs = ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid> >("nearest npcs")->Get();
+    for (std::list<ObjectGuid>::const_iterator itr = npcs.begin(); itr != npcs.end(); ++itr)
+    {
+        Creature* npc = bot->GetNPCIfCanInteractWith(*itr, npcFlags);
+        if (npc)
+            return npc;
+    }
+
+    return nullptr;
+}
+
+FriendExecutionResult FriendBotController::TryServiceAction(const std::string& name, const std::string& param, uint32 npcFlags)
+{
+    Creature* npc = GetNearbyServiceNpc(npcFlags);
+    const std::string displayName = param.empty() ? name : name + ":" + param;
+    if (!npc)
+    {
+        SetResult(lastIntent, displayName + ":no npc", FriendExecutionResult::BlockedNotUseful);
+        return FriendExecutionResult::BlockedNotUseful;
+    }
+
+    Player* bot = ai->GetBot();
+    bot->SetSelectionGuid(npc->GetObjectGuid());
+    sServerFacade.SetFacingTo(bot, npc);
+
+    if (param.empty())
+        return TryAction(name, "rpg action");
+
+    return TryActionWithParam(name, param, "rpg action");
+}
+
+void FriendBotController::ClearFriendTravelTarget()
+{
+    if (!ai || !ai->GetAiObjectContext())
+        return;
+
+    AiObjectContext* context = ai->GetAiObjectContext();
+    TravelTarget* target = context->GetValue<TravelTarget*>("travel target")->Get();
+    sTravelMgr.SetNullTravelTarget(target);
+    context->ClearValues("no active travel destinations");
+    context->GetValue<GuidPosition>("rpg target")->Set(GuidPosition());
+    context->GetValue<ObjectGuid>("attack target")->Set(ObjectGuid());
 }
 
 bool FriendBotController::TryPrerequisites(Action* action, const std::string& source, uint8 depth, Player* owner)
@@ -2926,7 +3022,7 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
         if (command != FriendCommand::Shop)
             nextResupplyAttemptAt = now + FRIEND_RESUPPLY_RETRY_COOLDOWN;
 
-        TryAction("reset travel target", "friend resupply", 0, ai->GetBot());
+        ClearFriendTravelTarget();
         if (command == FriendCommand::Shop)
         {
             command = FriendCommand::None;
@@ -2939,7 +3035,7 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
     }
 
     if (situation.nearbyRepair && situation.shouldRepair &&
-        TryAction("repair", "friend resupply") == FriendExecutionResult::Done)
+        TryServiceAction("repair", "", UNIT_NPC_FLAG_REPAIR) == FriendExecutionResult::Done)
     {
         MaybeSayActivity(situation, "resupply-repair", {
             "Repairing my gear.",
@@ -2952,7 +3048,7 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
     {
         if (situation.shouldSell)
         {
-            if (TryActionWithParam("sell", "vendor", "friend resupply") == FriendExecutionResult::Done)
+            if (TryServiceAction("sell", "vendor", FriendVendorNpcFlags()) == FriendExecutionResult::Done)
             {
                 MaybeSayActivity(situation, "resupply-sell", {
                     "Selling junk while I'm here.",
@@ -2960,7 +3056,7 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
                 }, command == FriendCommand::Shop ? 70 : 25, 60);
                 return true;
             }
-            if (TryActionWithParam("sell", "gray", "friend resupply") == FriendExecutionResult::Done)
+            if (TryServiceAction("sell", "gray", FriendVendorNpcFlags()) == FriendExecutionResult::Done)
             {
                 MaybeSayActivity(situation, "resupply-sell", {
                     "Selling junk while I'm here.",
@@ -2971,7 +3067,7 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
         }
 
         if (situation.shouldBuy &&
-            TryActionWithParam("buy", "vendor", "friend resupply") == FriendExecutionResult::Done)
+            TryServiceAction("buy", "vendor", FriendVendorNpcFlags()) == FriendExecutionResult::Done)
         {
             MaybeSayActivity(situation, "resupply-buy", {
                 "Restocking supplies.",
@@ -2990,7 +3086,7 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
         if (command != FriendCommand::Shop)
             nextResupplyAttemptAt = now + FRIEND_RESUPPLY_RETRY_COOLDOWN;
 
-        TryAction("reset travel target", "friend resupply", 0, ai->GetBot());
+        ClearFriendTravelTarget();
         if (command == FriendCommand::Shop)
         {
             command = FriendCommand::None;
@@ -3005,6 +3101,24 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
         return true;
     }
 
+    if (serviceTravelTarget && expectedServiceNearby && !NeedsTownChores(situation))
+    {
+        resupplyTravelRequested = false;
+        ClearFriendTravelTarget();
+        if (command == FriendCommand::Shop)
+        {
+            command = FriendCommand::None;
+            ClearIdleState();
+            SetResult(lastIntent, "shop done", FriendExecutionResult::Done);
+        }
+        else
+        {
+            SetResult(lastIntent, "resupply done", FriendExecutionResult::Done);
+        }
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        return true;
+    }
+
     if (NeedsTownChores(situation) && TryTravelForResupply(situation))
         return true;
 
@@ -3014,7 +3128,7 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
         if (blocked)
         {
             resupplyTravelRequested = false;
-            TryAction("reset travel target", "friend resupply", 0, ai->GetBot());
+            ClearFriendTravelTarget();
             command = FriendCommand::None;
             ClearIdleState();
             SetResult(lastIntent, "shop blocked", FriendExecutionResult::BlockedNotUseful);
@@ -3023,6 +3137,8 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
         }
 
         command = FriendCommand::None;
+        resupplyTravelRequested = false;
+        ClearFriendTravelTarget();
         ClearIdleState();
         SetResult(lastIntent, "shop done", FriendExecutionResult::Done);
         ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
@@ -3056,19 +3172,10 @@ bool FriendBotController::TryTravelForResupply(const FriendSituation& situation)
     if ((situation.travelTargetPreparing || situation.travelTargetTraveling || situation.travelTargetActive) &&
         !resupplyTravelRequested)
     {
-        FriendExecutionResult result = TryAction("reset travel target", "friend resupply", 0, ai->GetBot());
-        if (result == FriendExecutionResult::Done)
-            return true;
-
-        if (result != FriendExecutionResult::BlockedNoAction)
-        {
-            if (command != FriendCommand::Shop)
-                nextResupplyAttemptAt = time(nullptr) + FRIEND_RESUPPLY_RETRY_COOLDOWN;
-            ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
-            return true;
-        }
-
-        return false;
+        ClearFriendTravelTarget();
+        SetResult(lastIntent, "clear travel target", FriendExecutionResult::Done);
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        return true;
     }
 
     if (situation.travelTargetPreparing && resupplyTravelRequested)
@@ -3094,7 +3201,7 @@ bool FriendBotController::TryTravelForResupply(const FriendSituation& situation)
         if (command != FriendCommand::Shop)
             nextResupplyAttemptAt = time(nullptr) + FRIEND_RESUPPLY_RETRY_COOLDOWN;
 
-        TryAction("reset travel target", "friend resupply", 0, ai->GetBot());
+        ClearFriendTravelTarget();
         if (command == FriendCommand::Shop)
         {
             command = FriendCommand::None;
@@ -3121,7 +3228,7 @@ bool FriendBotController::TryTravelForResupply(const FriendSituation& situation)
 
     uint32 purpose = (situation.shouldRepair && !situation.nearbyRepair) ?
         FRIEND_REPAIR_TRAVEL_PURPOSE : FRIEND_VENDOR_TRAVEL_PURPOSE;
-    FriendExecutionResult result = TryAction("request travel target::" + std::to_string(purpose), "friend resupply", 0, ai->GetBot());
+    FriendExecutionResult result = TryRequestTravelTarget(purpose);
     if (result == FriendExecutionResult::Done)
     {
         resupplyTravelRequested = true;
@@ -3197,7 +3304,10 @@ bool FriendBotController::MoveToFriendTravelTarget(const FriendSituation& situat
         }
     }
 
-    if (from.distance(destination) <= INTERACTION_DISTANCE)
+    const bool arrived = serviceTravelTarget ?
+        from.distance(destination) <= INTERACTION_DISTANCE :
+        target->GetDestination()->IsIn(from);
+    if (arrived)
     {
         target->SetStatus(TravelStatus::TRAVEL_STATUS_WORK);
         SetResult(lastIntent, "at travel target", FriendExecutionResult::Done);
@@ -3237,6 +3347,17 @@ bool FriendBotController::MoveToFriendTravelTarget(const FriendSituation& situat
                 y = standY;
                 z = standZ;
             }
+        }
+    }
+    else
+    {
+        const float radius = target->GetDestination()->GetRadiusMin();
+        if (radius > INTERACTION_DISTANCE)
+        {
+            const float angle = static_cast<float>(urand(0, 6283)) / 1000.0f;
+            const float distance = radius * (static_cast<float>(urand(50, 100)) / 100.0f);
+            x += std::cos(angle) * distance;
+            y += std::sin(angle) * distance;
         }
     }
 
@@ -4166,16 +4287,10 @@ bool FriendBotController::ExecuteIdleTravelGoal(const FriendSituation& situation
     if ((situation.travelTargetPreparing || situation.travelTargetTraveling || situation.travelTargetActive) &&
         (!idleTravelRequested || idleTravelPurpose != purpose))
     {
-        FriendExecutionResult result = TryAction("reset travel target", "friend idle", 0, ai->GetBot());
-        if (result == FriendExecutionResult::Done)
-            return true;
-        if (result != FriendExecutionResult::BlockedNoAction)
-        {
-            ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
-            return true;
-        }
-
-        return false;
+        ClearFriendTravelTarget();
+        SetResult(lastIntent, "clear travel target", FriendExecutionResult::Done);
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        return true;
     }
 
     if (situation.travelTargetPreparing && idleTravelRequested)
@@ -4205,7 +4320,7 @@ bool FriendBotController::ExecuteIdleTravelGoal(const FriendSituation& situation
         return TryAction("move to travel target", "friend idle", 0, ai->GetBot()) == FriendExecutionResult::Done;
     }
 
-    FriendExecutionResult result = TryAction("request travel target::" + std::to_string(purpose), "friend idle", 0, ai->GetBot());
+    FriendExecutionResult result = TryRequestTravelTarget(purpose);
     if (result == FriendExecutionResult::Done)
     {
         idleTravelRequested = true;
