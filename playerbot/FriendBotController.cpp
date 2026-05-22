@@ -27,7 +27,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v26";
+    const char* FRIEND_BOT_VERSION = "v27";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -290,6 +290,34 @@ namespace
         return count;
     }
 
+    std::list<Item*> FriendBagItems(Player* bot)
+    {
+        std::list<Item*> result;
+        if (!bot)
+            return result;
+
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        {
+            if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                result.push_back(item);
+        }
+
+        for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+        {
+            Bag* pBag = (Bag*)bot->GetItemByPos(INVENTORY_SLOT_BAG_0, bag);
+            if (!pBag)
+                continue;
+
+            for (uint8 slot = 0; slot < pBag->GetBagSize(); ++slot)
+            {
+                if (Item* item = bot->GetItemByPos(bag, slot))
+                    result.push_back(item);
+            }
+        }
+
+        return result;
+    }
+
     bool ShouldFriendSellItem(PlayerbotAI* ai, Item* item, bool aggressive)
     {
         if (!ai || !ai->GetAiObjectContext() || !item || item->IsInTrade() ||
@@ -321,11 +349,10 @@ namespace
     std::list<Item*> FriendSellItems(PlayerbotAI* ai, bool aggressive)
     {
         std::list<Item*> result;
-        if (!ai)
+        if (!ai || !ai->GetBot())
             return result;
 
-        std::list<Item*> items = ai->InventoryParseItems("inventory", IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
-        for (Item* item : items)
+        for (Item* item : FriendBagItems(ai->GetBot()))
         {
             if (ShouldFriendSellItem(ai, item, aggressive))
                 result.push_back(item);
@@ -346,19 +373,34 @@ namespace
         context->ClearValues("item usage");
     }
 
-    bool StoreFriendDebugItem(Player* bot, uint32 itemId, uint32 count)
+    bool StoreFriendDebugItem(Player* bot, uint32 itemId, uint32 count, InventoryResult* failure = nullptr)
     {
+        if (failure)
+            *failure = EQUIP_ERR_OK;
+
         if (!bot || !itemId || !count || !sObjectMgr.GetItemPrototype(itemId))
+        {
+            if (failure)
+                *failure = EQUIP_ERR_ITEM_NOT_FOUND;
             return false;
+        }
 
         ItemPosCountVec dest;
         InventoryResult result = bot->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, itemId, count);
         if (result != EQUIP_ERR_OK)
+        {
+            if (failure)
+                *failure = result;
             return false;
+        }
 
-        Item* item = bot->StoreNewItem(dest, itemId, true);
+        Item* item = bot->StoreNewItem(dest, itemId, true, Item::GenerateItemRandomPropertyId(itemId));
         if (!item)
+        {
+            if (failure)
+                *failure = EQUIP_ERR_INT_BAG_ERROR;
             return false;
+        }
 
         bot->SendNewItem(item, count, true, false);
         return true;
@@ -628,7 +670,8 @@ void FriendBotController::RunTick(bool minimal)
 
 bool FriendBotController::HandleCommand(const std::string& rawCommand, Player* requester, std::string& response)
 {
-    std::string cmd = rawCommand;
+    const std::string trimmedRawCommand = Trim(rawCommand);
+    std::string cmd = trimmedRawCommand;
     std::transform(cmd.begin(), cmd.end(), cmd.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
     auto clearTemporaryState = [&]()
@@ -685,10 +728,12 @@ bool FriendBotController::HandleCommand(const std::string& rawCommand, Player* r
     if (cmd == "forcegearempty" || cmd == "force gear empty" || cmd == "gear empty")
         return ForceGearEmpty(requester, response);
 
-    if (cmd == "forceitemclear" || cmd == "force item clear" || cmd == "item clear")
+    if (cmd == "forceitemclear" || cmd == "force itemclear" || cmd == "force item clear" ||
+        cmd == "item clear" || cmd == "clearitems" || cmd == "foreceitemclear")
         return ForceItemClear(requester, response);
 
-    if (cmd == "forceitemjunk" || cmd == "force item junk" || cmd == "item junk")
+    if (cmd == "forceitemjunk" || cmd == "force itemjunk" || cmd == "force item junk" ||
+        cmd == "item junk" || cmd == "junkitems" || cmd == "foreceitemjunk")
         return ForceItemJunk(requester, response);
 
     if (StartsWith(cmd, "forcelevel ") || StartsWith(cmd, "force level "))
@@ -804,7 +849,7 @@ bool FriendBotController::HandleCommand(const std::string& rawCommand, Player* r
 
     if (cmd == "trade" || StartsWith(cmd, "trade "))
     {
-        std::string fragment = cmd == "trade" ? "" : Trim(rawCommand.substr(6));
+        std::string fragment = cmd == "trade" ? "" : Trim(trimmedRawCommand.substr(6));
         return TradeMatchingItem(requester, fragment, response);
     }
 
@@ -1889,7 +1934,7 @@ FriendExecutionResult FriendBotController::TryServiceAction(const std::string& n
     if (name == "sell" && !param.empty())
     {
         result = TryDirectSellItems(npc, param) ? FriendExecutionResult::Done : FriendExecutionResult::Failed;
-        if (result != FriendExecutionResult::Done)
+        if (result != FriendExecutionResult::Done && param != "friend")
             result = TryActionWithParam(name, param, "rpg action");
 
         SetResult(lastIntent, displayName, result);
@@ -1922,29 +1967,67 @@ bool FriendBotController::TryDirectSellItems(Creature* npc, const std::string& q
 
     uint32 soldItems = 0;
     uint32 soldMoney = 0;
+    uint32 failedItems = 0;
     for (Item* item : items)
     {
         if (!item || item->IsInTrade() || !item->GetProto() || !item->GetProto()->SellPrice)
             continue;
 
-        std::string itemName = item->GetProto()->Name1;
+        std::string itemName = item->GetProto()->Name1 ? item->GetProto()->Name1 : "";
         uint32 itemId = item->GetProto()->ItemId;
         uint32 count = item->GetCount();
         uint32 bag = item->GetBagSlot();
         uint32 slot = item->GetSlot();
         uint32 value = item->GetProto()->SellPrice * count;
+        ObjectGuid itemGuid = item->GetObjectGuid();
+        uint32 moneyBefore = bot->GetMoney();
+        bool sold = false;
+        uint32 moneyGained = 0;
 
-        bot->DestroyItem(bag, slot, true);
-        bot->ModifyMoney(static_cast<int32>(value));
+        WorldPacket packet;
+        packet << npc->GetObjectGuid() << itemGuid << count;
+        bot->GetSession()->HandleSellItemOpcode(packet);
+
+        Item* remaining = bot->GetItemByPos(bag, slot);
+        if (!remaining || remaining->GetObjectGuid() != itemGuid)
+        {
+            sold = true;
+            moneyGained = bot->GetMoney() > moneyBefore ? bot->GetMoney() - moneyBefore : value;
+        }
+        else
+        {
+            uint32 moneyBeforeFallback = bot->GetMoney();
+            bot->DestroyItem(bag, slot, true);
+            remaining = bot->GetItemByPos(bag, slot);
+            if (!remaining || remaining->GetObjectGuid() != itemGuid)
+            {
+                sold = true;
+                bot->ModifyMoney(static_cast<int32>(value));
+                moneyGained = value;
+                if (bot->GetMoney() > moneyBeforeFallback)
+                    moneyGained = bot->GetMoney() - moneyBeforeFallback;
+            }
+        }
+
+        if (!sold)
+        {
+            ++failedItems;
+            continue;
+        }
 
         soldItems += count;
-        soldMoney += value;
+        soldMoney += moneyGained;
         sPlayerbotAIConfig.logEvent(ai, "FriendSellAction", itemName, std::to_string(itemId));
     }
 
     if (soldItems > 0)
         SetResult(lastIntent, "direct sell:" + qualifier + ":" + std::to_string(soldItems) + " items:" +
             ChatHelper::formatMoney(soldMoney), FriendExecutionResult::Done);
+    else if (failedItems > 0)
+        SetResult(lastIntent, "direct sell failed:" + std::to_string(failedItems), FriendExecutionResult::Failed);
+
+    if (soldItems > 0)
+        ClearFriendInventoryValues(ai);
 
     return soldItems > 0;
 }
@@ -4514,6 +4597,7 @@ bool FriendBotController::ForceItemClear(Player* requester, std::string& respons
         uint8 bag;
         uint8 slot;
         uint32 count;
+        ObjectGuid guid;
     };
 
     std::vector<ItemSlot> remove;
@@ -4522,7 +4606,7 @@ bool FriendBotController::ForceItemClear(Player* requester, std::string& respons
         if (!item || item->IsInTrade() || !item->GetProto() || item->GetProto()->ItemId == HEARTHSTONE_ITEM_ID)
             return;
 
-        remove.push_back({ item->GetBagSlot(), item->GetSlot(), item->GetCount() });
+        remove.push_back({ item->GetBagSlot(), item->GetSlot(), item->GetCount(), item->GetObjectGuid() });
     };
 
     for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
@@ -4539,15 +4623,22 @@ bool FriendBotController::ForceItemClear(Player* requester, std::string& respons
     }
 
     uint32 removed = 0;
+    uint32 failed = 0;
     for (const ItemSlot& slot : remove)
     {
         bot->DestroyItem(slot.bag, slot.slot, true);
-        removed += slot.count;
+        Item* remaining = bot->GetItemByPos(slot.bag, slot.slot);
+        if (!remaining || remaining->GetObjectGuid() != slot.guid)
+            removed += slot.count;
+        else
+            ++failed;
     }
 
     ClearFriendInventoryValues(ai);
     std::ostringstream out;
     out << "Cleared " << removed << " bag item(s), keeping hearthstone.";
+    if (failed)
+        out << " Failed to remove " << failed << " slot(s).";
     response = out.str();
     return true;
 }
@@ -4575,11 +4666,12 @@ bool FriendBotController::ForceItemJunk(Player* requester, std::string& response
     Player* bot = ai->GetBot();
     uint32 added = 0;
     uint32 failedInRow = 0;
+    InventoryResult lastFailure = EQUIP_ERR_OK;
     const uint32 itemCount = sizeof(TEST_ITEMS) / sizeof(TEST_ITEMS[0]);
     for (uint32 attempts = 0; attempts < itemCount * 8 && failedInRow < itemCount; ++attempts)
     {
         uint32 itemId = TEST_ITEMS[attempts % itemCount];
-        if (StoreFriendDebugItem(bot, itemId, 1))
+        if (StoreFriendDebugItem(bot, itemId, 1, &lastFailure))
         {
             ++added;
             failedInRow = 0;
@@ -4592,7 +4684,7 @@ bool FriendBotController::ForceItemJunk(Player* requester, std::string& response
     std::ostringstream out;
     out << "Added " << added << " junk test item(s).";
     if (!added)
-        out << " Bags may be full.";
+        out << " Store failed, err=" << static_cast<uint32>(lastFailure) << ".";
     response = out.str();
     return true;
 }
@@ -6037,10 +6129,24 @@ std::vector<std::string> FriendBotController::BuffOrCureActions(const FriendSitu
             "prayer of spirit on party", "divine spirit on party",
             "pve greater blessing on party", "pve blessing on party",
             "mark of the wild on party", "gift of the wild on party", "thorns on party",
-            "paladin aura", "trueshot aura", "water shield", "lightning shield",
-            "demon armor", "demon skin", "fel armor", "inner fire", "mage armor", "ice armor",
-            "molten armor", "aspect of the hawk", "aspect of the viper", "horn of winter"
+            "paladin aura", "trueshot aura", "horn of winter"
         });
+
+        Player* bot = ai ? ai->GetBot() : nullptr;
+        if (!bot || !ai->HasAnyAuraOf(bot, "water shield", "lightning shield", NULL))
+            AddActions(actions, { "water shield", "lightning shield" });
+
+        if (!bot || !ai->HasAnyAuraOf(bot, "demon armor", "demon skin", "fel armor", NULL))
+            AddActions(actions, { "demon armor", "demon skin", "fel armor" });
+
+        if (!bot || !ai->HasAnyAuraOf(bot, "inner fire", NULL))
+            actions.push_back("inner fire");
+
+        if (!bot || !ai->HasAnyAuraOf(bot, "mage armor", "ice armor", "frost armor", "molten armor", NULL))
+            AddActions(actions, { "mage armor", "ice armor", "molten armor" });
+
+        if (!bot || !ai->HasAnyAuraOf(bot, "aspect of the hawk", "aspect of the viper", NULL))
+            AddActions(actions, { "aspect of the hawk", "aspect of the viper" });
     }
 
     return actions;

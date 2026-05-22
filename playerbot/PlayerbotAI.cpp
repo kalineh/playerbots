@@ -96,11 +96,17 @@ namespace
             command == "attack" || command == "heal" || command == "heal me" || command == "buff" || command == "buff me" ||
             command == "summon" || command == "report" ||
             command == "help" || command == "?" ||
+            command == "version" || command == "weights" ||
             command == "items" || command.find("items ") == 0 ||
             command == "equip" || command.find("equip ") == 0 ||
+            command == "trade" || command.find("trade ") == 0 ||
             command == "forcelevelsync" || command == "force level sync" || command == "level sync" ||
             command == "forcegearsync" || command == "force gear sync" || command == "gear sync" ||
             command == "forcegearempty" || command == "force gear empty" || command == "gear empty" ||
+            command == "forceitemclear" || command == "force itemclear" || command == "force item clear" ||
+            command == "item clear" || command == "clearitems" || command == "foreceitemclear" ||
+            command == "forceitemjunk" || command == "force itemjunk" || command == "force item junk" ||
+            command == "item junk" || command == "junkitems" || command == "foreceitemjunk" ||
             command.find("forcelevel ") == 0 || command.find("force level ") == 0 ||
             command == "verbose" || command == "intent" ||
             command == "debug" || command == "silent";
