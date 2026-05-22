@@ -2358,6 +2358,13 @@ bool FriendBotController::TryCatalogHeal(const FriendSituation& situation, const
     if (targetHealth >= 99 && situation.lowestPartyHealthDelta >= 0)
         return false;
 
+    const bool danger = targetHealth < sPlayerbotAIConfig.lowHealth ||
+        situation.lowestPartyHealthDelta <= FRIEND_HEALTH_DROP_DANGER;
+    const bool urgent = danger ||
+        (targetHealth < sPlayerbotAIConfig.mediumHealth && situation.lowestPartyHealthDelta <= FRIEND_HEALTH_DROP_NOTICE);
+    const bool topOff = targetHealth >= sPlayerbotAIConfig.mediumHealth &&
+        situation.lowestPartyHealthDelta >= FRIEND_HEALTH_DROP_NOTICE;
+
     for (const FriendAbility& ability : abilityCatalog.GetAbilities())
     {
         if (!ability.Has(FRIEND_ABILITY_HEAL) && !ability.Has(FRIEND_ABILITY_SHIELD))
@@ -2367,17 +2374,35 @@ bool FriendBotController::TryCatalogHeal(const FriendSituation& situation, const
             continue;
 
         int32 score = 20;
+        const bool flashHeal = Contains(ability.lowerName, "flash heal") ||
+            Contains(ability.lowerName, "flash of light") ||
+            Contains(ability.lowerName, "lesser healing wave");
+        const bool bigHeal = !flashHeal && (Contains(ability.lowerName, "greater heal") ||
+            Contains(ability.lowerName, "healing touch") ||
+            Contains(ability.lowerName, "holy light") ||
+            Contains(ability.lowerName, "healing wave"));
+        const bool smallHeal = !flashHeal && !bigHeal &&
+            (ability.lowerName == "heal" ||
+                Contains(ability.lowerName, "lesser heal") ||
+                Contains(ability.lowerName, "nourish"));
+
         if (ability.Has(FRIEND_ABILITY_SHIELD))
-            score += (targetHealth < sPlayerbotAIConfig.mediumHealth ||
-                situation.lowestPartyHealthDelta <= FRIEND_HEALTH_DROP_NOTICE) ? 35 : 10;
+            score += urgent ? 45 : (topOff ? 10 : 25);
         if (ability.Has(FRIEND_ABILITY_HOT))
-            score += targetHealth > sPlayerbotAIConfig.lowHealth ? 35 : 5;
+            score += topOff ? 55 : (urgent ? 8 : 30);
         if (ability.Has(FRIEND_ABILITY_HEAL) && !ability.Has(FRIEND_ABILITY_HOT))
-            score += targetHealth < sPlayerbotAIConfig.mediumHealth ? 45 : 8;
-        if (targetHealth < sPlayerbotAIConfig.lowHealth)
+            score += urgent ? 35 : (topOff ? 5 : 25);
+        if (danger)
             score += 40;
         if (situation.lowestPartyHealthDelta <= FRIEND_HEALTH_DROP_NOTICE)
             score += 25;
+
+        if (flashHeal)
+            score += danger ? 45 : (urgent ? 45 : -20);
+        if (bigHeal)
+            score += danger ? -10 : (urgent ? 5 : (topOff ? -15 : 35));
+        if (smallHeal)
+            score += topOff ? 15 : (urgent ? -5 : 20);
         if (targetHealth > sPlayerbotAIConfig.almostFullHealth && !ability.Has(FRIEND_ABILITY_HOT) && !ability.Has(FRIEND_ABILITY_SHIELD))
             score -= 35;
 
