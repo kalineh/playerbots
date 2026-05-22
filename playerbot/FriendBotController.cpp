@@ -27,7 +27,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v30";
+    const char* FRIEND_BOT_VERSION = "v31";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -1472,9 +1472,10 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
             mode != FriendMode::Dungeon &&
             situation.leaderSafe &&
             situation.leaderDistance <= sPlayerbotAIConfig.reactDistance &&
-            situation.nearbyPartyMembers >= 2 &&
+            situation.nearbyPartyMembers >= 1 &&
             situation.possibleTargetsCount > 0 &&
             situation.possibleTargetsCount <= 2 &&
+            situation.balance >= 100 &&
             situation.botHealth >= sPlayerbotAIConfig.mediumHealth &&
             situation.botMana >= sPlayerbotAIConfig.lowMana &&
             !situation.damagedPartyMembers;
@@ -1497,14 +1498,14 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
                     18 + gatherBias + boredom / 5 + forwardBias / 10);
 
             if (situation.possibleTargetsCount > 0 && situation.botHealth >= FRIEND_HEAL_TOP_OFF_HEALTH &&
-                situation.botMana >= (mode == FriendMode::Solo ? sPlayerbotAIConfig.lowMana : sPlayerbotAIConfig.mediumMana))
+                situation.botMana >= sPlayerbotAIConfig.lowMana)
                 add(FriendIntent::Grind, mode == FriendMode::Solo ?
                     115 + grindBias + boredom + forwardBias / 4 :
-                    (partyComfortable ? 50 + grindBias + boredom + forwardBias / 6 : 0));
+                    (partyComfortable ? 70 + grindBias + boredom * 2 + forwardBias / 6 : 0));
 
             if (safePullOpportunity)
                 add(FriendIntent::PullWithParty, partyComfortable ?
-                    45 + grindBias / 2 + boredom / 2 + forwardBias / 8 : 20);
+                    70 + grindBias / 2 + boredom + forwardBias / 8 : 30);
 
             if (!urgentTownChores && situation.botHealth >= FRIEND_HEAL_TOP_OFF_HEALTH &&
                 situation.botMana >= sPlayerbotAIConfig.lowMana)
@@ -5176,15 +5177,33 @@ bool FriendBotController::ExecuteCurrentTask(const FriendSituation& situation)
             break;
 
         case FriendTaskType::GrindNearby:
-            if (mode != FriendMode::Dungeon && situation.possibleTargetsCount > 0 &&
-                TryAction("attack anything", "friend idle") == FriendExecutionResult::Done)
+            if (mode != FriendMode::Dungeon && situation.possibleTargetsCount > 0)
             {
-                MaybeSayActivity(situation, "grind", {
-                    "I'll clear a few nearby.",
-                    "Going to fight something nearby."
-                }, mode == FriendMode::Solo ? 45 : 20, 75);
-                executionNextActionAt = now + urand(5, 12);
-                return true;
+                if (GetDamageTarget(situation, true))
+                {
+                    if (TryFreeDamage(situation, "friend grind") ||
+                        TryCatalogDamage(situation, "friend grind") ||
+                        (PrefersMeleeDamage(situation) && MoveToDamageTarget(situation, "grind engage")) ||
+                        TryActions(DamageActions(situation), "friend grind fallback"))
+                    {
+                        MaybeSayActivity(situation, "grind", {
+                            "I'll clear a few nearby.",
+                            "Going to fight something nearby."
+                        }, mode == FriendMode::Solo ? 45 : 20, 75);
+                        executionNextActionAt = now + urand(5, 12);
+                        return true;
+                    }
+                }
+
+                if (TryAction("attack anything", "friend idle") == FriendExecutionResult::Done)
+                {
+                    MaybeSayActivity(situation, "grind", {
+                        "I'll clear a few nearby.",
+                        "Going to fight something nearby."
+                    }, mode == FriendMode::Solo ? 45 : 20, 75);
+                    executionNextActionAt = now + urand(5, 12);
+                    return true;
+                }
             }
             break;
 
@@ -5239,12 +5258,6 @@ bool FriendBotController::ExecuteCurrentTask(const FriendSituation& situation)
             break;
 
         case FriendTaskType::HangOut:
-            if (mode != FriendMode::Solo && MoveInLeaderOrbit(situation, "idle loiter", false))
-            {
-                executionNextActionAt = now + urand(6, 14);
-                return true;
-            }
-
             if (ai && ai->GetBot() && urand(0, 3) == 0)
             {
                 switch (urand(0, 8))
@@ -5258,9 +5271,20 @@ bool FriendBotController::ExecuteCurrentTask(const FriendSituation& situation)
                     default: ai->GetBot()->HandleEmoteCommand(EMOTE_ONESHOT_TALK); break;
                 }
 
-                executionNextActionAt = now + urand(3, 7);
+                MaybeSayActivity(situation, "hangout", {
+                    "Hanging out a bit.",
+                    "I'm still here.",
+                    "Let me know when we're moving."
+                }, mode == FriendMode::Solo ? 15 : 25, 90);
+                executionNextActionAt = now + urand(4, 9);
                 SetResult(lastIntent, "social emote", FriendExecutionResult::Done);
                 ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+                return true;
+            }
+
+            if (mode != FriendMode::Solo && MoveInLeaderOrbit(situation, "idle loiter", false))
+            {
+                executionNextActionAt = now + urand(6, 14);
                 return true;
             }
 
