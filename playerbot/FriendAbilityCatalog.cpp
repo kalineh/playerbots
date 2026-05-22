@@ -135,6 +135,30 @@ namespace
             Contains(name, "heroism");
     }
 
+    bool IsComboPointSpenderName(const std::string& name)
+    {
+        return Contains(name, "eviscerate") ||
+            Contains(name, "rupture") ||
+            Contains(name, "slice and dice") ||
+            Contains(name, "kidney shot") ||
+            Contains(name, "rip") ||
+            Contains(name, "ferocious bite") ||
+            Contains(name, "maim") ||
+            Contains(name, "savage roar");
+    }
+
+    bool IsComboPointBuilderName(const std::string& name)
+    {
+        return Contains(name, "sinister strike") ||
+            Contains(name, "backstab") ||
+            Contains(name, "mutilate") ||
+            Contains(name, "hemorrhage") ||
+            Contains(name, "shred") ||
+            Contains(name, "mangle (cat)") ||
+            Contains(name, "rake") ||
+            Contains(name, "claw");
+    }
+
     void AddDispelType(uint32 type, uint32& primaryType, uint32& mask)
     {
         if (!type || type >= 32)
@@ -219,6 +243,12 @@ namespace
 
         if (IsCureName(lowerName, dispelType, dispelMask))
             flags |= FRIEND_ABILITY_CURE;
+
+        if (IsComboPointBuilderName(lowerName))
+            flags |= FRIEND_ABILITY_COMBO_BUILDER;
+
+        if (IsComboPointSpenderName(lowerName))
+            flags |= FRIEND_ABILITY_COMBO_SPENDER;
 
         for (uint8 i = 0; i < MAX_EFFECT_INDEX; ++i)
         {
@@ -395,6 +425,7 @@ void FriendAbilityCatalog::Refresh(PlayerbotAI* ai)
         ability.powerType = spellInfo->powerType;
         ability.manaCost = spellInfo->manaCost;
         ability.manaCostPercent = spellInfo->ManaCostPercentage;
+        ability.castTime = GetSpellCastTime(spellInfo, ai->GetBot());
         ability.flags = ClassifyAbility(spellInfo, ability.lowerName, ability.dispelType, ability.dispelMask);
         FillRange(spellInfo, ability);
 

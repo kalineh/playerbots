@@ -33,7 +33,9 @@ namespace ai
         FRIEND_ABILITY_THREAT = 0x00080000,
         FRIEND_ABILITY_MOVEMENT = 0x00100000,
         FRIEND_ABILITY_DAMAGE_COOLDOWN = 0x00200000,
-        FRIEND_ABILITY_ROOT = 0x00400000
+        FRIEND_ABILITY_ROOT = 0x00400000,
+        FRIEND_ABILITY_COMBO_BUILDER = 0x00800000,
+        FRIEND_ABILITY_COMBO_SPENDER = 0x01000000
     };
 
     struct FriendAbility
@@ -50,6 +52,7 @@ namespace ai
         uint32 powerType = 0;
         uint32 manaCost = 0;
         uint32 manaCostPercent = 0;
+        uint32 castTime = 0;
 
         bool Has(uint32 flag) const { return (flags & flag) != 0; }
         bool UsesMana() const { return powerType == POWER_MANA && (manaCost > 0 || manaCostPercent > 0); }

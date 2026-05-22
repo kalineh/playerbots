@@ -145,30 +145,6 @@ namespace
         return value.find(needle) != std::string::npos;
     }
 
-    bool IsComboPointSpender(const std::string& name)
-    {
-        return Contains(name, "eviscerate") ||
-            Contains(name, "rupture") ||
-            Contains(name, "slice and dice") ||
-            Contains(name, "kidney shot") ||
-            Contains(name, "rip") ||
-            Contains(name, "ferocious bite") ||
-            Contains(name, "maim") ||
-            Contains(name, "savage roar");
-    }
-
-    bool IsComboPointBuilder(const std::string& name)
-    {
-        return Contains(name, "sinister strike") ||
-            Contains(name, "backstab") ||
-            Contains(name, "mutilate") ||
-            Contains(name, "hemorrhage") ||
-            Contains(name, "shred") ||
-            Contains(name, "mangle (cat)") ||
-            Contains(name, "rake") ||
-            Contains(name, "claw");
-    }
-
     bool IsFriendMovementAction(const std::string& action)
     {
         return action == "move near leader" ||
@@ -1014,7 +990,7 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
                 return true;
             if (TryCatalogDamage(situation, "friend damage"))
                 return true;
-            return TryActions(DamageActions(situation), "friend damage");
+            return TryActions(DamageActions(situation), "friend fallback damage");
 
         case FriendIntent::RecoverResources:
             if (!situation.inCombat)
@@ -1043,19 +1019,19 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
 
                 return false;
             }
-            if (TryActions({ "mana gem", "mana potion", "dark rune", "life tap", "dark pact" }, "friend combat recover"))
+            if (TryActions({ "mana gem", "mana potion", "dark rune", "life tap", "dark pact" }, "friend fallback combat recover"))
                 return true;
             if (ShouldConserveDamageMana(situation) && TryFreeDamage(situation, "friend free damage"))
                 return true;
             if (TryCatalogDamage(situation, "friend damage"))
                 return true;
-            return TryActions(DamageActions(situation), "friend damage");
+            return TryActions(DamageActions(situation), "friend fallback damage");
 
         case FriendIntent::Resupply:
             return ExecuteResupply(situation);
 
         case FriendIntent::SaveSelf:
-            if (TryActions(SelfPreservationActions(situation), "friend self"))
+            if (TryActions(SelfPreservationActions(situation), "friend fallback self"))
             {
                 if (situation.botHealth < sPlayerbotAIConfig.lowHealth ||
                     situation.botHealthDelta <= FRIEND_HEALTH_DROP_DANGER ||
@@ -1093,7 +1069,7 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
                     }, 30, 45);
                 return true;
             }
-            if (TryActions(HealActions(situation), "friend heal"))
+            if (TryActions(HealActions(situation), "friend fallback heal"))
             {
                 if (situation.lowestPartyHealth < sPlayerbotAIConfig.lowHealth ||
                     situation.lowestPartyHealthDelta <= FRIEND_HEALTH_DROP_DANGER)
@@ -1110,7 +1086,7 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
         case FriendIntent::BuffOrCureParty:
             if (TryCatalogSupport(situation, "friend support"))
                 return true;
-            if (ShouldUseLegacySupportActions(situation) && TryActions(BuffOrCureActions(situation), "friend support"))
+            if (ShouldUseLegacySupportActions(situation) && TryActions(BuffOrCureActions(situation), "friend fallback support"))
                 return true;
             if (situation.hasCreatureLoot && ExecuteLoot(situation))
                 return true;
@@ -1125,13 +1101,13 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
         case FriendIntent::CrowdControl:
             if (TryCatalogCrowdControl(situation, "friend cc"))
                 return true;
-            if (TryActions(CrowdControlActions(situation), "friend cc"))
+            if (TryActions(CrowdControlActions(situation), "friend fallback cc"))
                 return true;
             if (ShouldConserveDamageMana(situation) && TryFreeDamage(situation, "friend free damage"))
                 return true;
             if (TryCatalogDamage(situation, "friend damage"))
                 return true;
-            return TryActions(DamageActions(situation), "friend damage");
+            return TryActions(DamageActions(situation), "friend fallback damage");
 
         case FriendIntent::PullWithParty:
             if (TryActions(PullActions(situation), "friend pull"))
@@ -1171,7 +1147,7 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
                 return true;
             if (PrefersMeleeDamage(situation) && MoveToDamageTarget(situation, "move to melee"))
                 return true;
-            if (TryActions(DamageActions(situation), "friend damage"))
+            if (TryActions(DamageActions(situation), "friend fallback damage"))
                 return true;
             if (situation.partyInCombat && situation.leaderSafe && situation.leaderDistance > SoftLeashDistance(situation))
                 return MoveNearLeader(situation, "move near leader", false);
@@ -1207,10 +1183,14 @@ FriendExecutionResult FriendBotController::TryAction(const std::string& name, co
     if (!ai || !ai->GetAiObjectContext())
         return FriendExecutionResult::BlockedNoAction;
 
+    const bool fallbackAction = source.find("fallback") != std::string::npos &&
+        !IsFriendMovementAction(name) && !StartsWith(name, "reach ");
+    const std::string displayName = fallbackAction ? "fallback:" + name : name;
+
     Action* action = ai->GetAiObjectContext()->GetAction(name);
     if (!action)
     {
-        SetResult(lastIntent, name, FriendExecutionResult::BlockedNoAction);
+        SetResult(lastIntent, displayName, FriendExecutionResult::BlockedNoAction);
         return FriendExecutionResult::BlockedNoAction;
     }
 
@@ -1220,7 +1200,7 @@ FriendExecutionResult FriendBotController::TryAction(const std::string& name, co
 
     if (!action->isUseful())
     {
-        SetResult(lastIntent, name, FriendExecutionResult::BlockedNotUseful);
+        SetResult(lastIntent, displayName, FriendExecutionResult::BlockedNotUseful);
         return FriendExecutionResult::BlockedNotUseful;
     }
 
@@ -1229,7 +1209,7 @@ FriendExecutionResult FriendBotController::TryAction(const std::string& name, co
 
     if (!action->isPossible())
     {
-        SetResult(lastIntent, name, FriendExecutionResult::BlockedNotPossible);
+        SetResult(lastIntent, displayName, FriendExecutionResult::BlockedNotPossible);
         return FriendExecutionResult::BlockedNotPossible;
     }
 
@@ -1239,7 +1219,7 @@ FriendExecutionResult FriendBotController::TryAction(const std::string& name, co
     if (executed)
         ai->SetActionDuration(action);
 
-    SetResult(lastIntent, name, result);
+    SetResult(lastIntent, displayName, result);
     return result;
 }
 
@@ -1779,7 +1759,7 @@ bool FriendBotController::TryFallbackCombat(const FriendSituation& situation, co
     if (TryCatalogDamage(situation, "friend damage"))
         return true;
 
-    if (TryActions(DamageActions(situation), "friend damage"))
+    if (TryActions(DamageActions(situation), "friend fallback damage"))
         return true;
 
     if (situation.leaderSafe && situation.leaderDistance > SoftLeashDistance(situation))
@@ -2452,8 +2432,8 @@ bool FriendBotController::TryCatalogDamage(const FriendSituation& situation, con
             score -= 25;
         if (usesComboPoints)
         {
-            const bool comboSpender = IsComboPointSpender(ability.lowerName);
-            const bool comboBuilder = IsComboPointBuilder(ability.lowerName);
+            const bool comboSpender = ability.Has(FRIEND_ABILITY_COMBO_SPENDER);
+            const bool comboBuilder = ability.Has(FRIEND_ABILITY_COMBO_BUILDER);
             if (comboSpender)
             {
                 if (!comboPoints)
@@ -2523,17 +2503,10 @@ bool FriendBotController::TryCatalogHeal(const FriendSituation& situation, const
             continue;
 
         int32 score = 20;
-        const bool flashHeal = Contains(ability.lowerName, "flash heal") ||
-            Contains(ability.lowerName, "flash of light") ||
-            Contains(ability.lowerName, "lesser healing wave");
-        const bool bigHeal = !flashHeal && (Contains(ability.lowerName, "greater heal") ||
-            Contains(ability.lowerName, "healing touch") ||
-            Contains(ability.lowerName, "holy light") ||
-            Contains(ability.lowerName, "healing wave"));
-        const bool smallHeal = !flashHeal && !bigHeal &&
-            (ability.lowerName == "heal" ||
-                Contains(ability.lowerName, "lesser heal") ||
-                Contains(ability.lowerName, "nourish"));
+        const bool instantHeal = ability.castTime == 0;
+        const bool fastHeal = ability.castTime > 0 && ability.castTime <= 1600;
+        const bool longHeal = ability.castTime >= 2200;
+        const bool mediumHeal = !instantHeal && !fastHeal && !longHeal;
 
         if (ability.Has(FRIEND_ABILITY_SHIELD))
             score += urgent ? 45 : (topOff ? 10 : 25);
@@ -2546,12 +2519,14 @@ bool FriendBotController::TryCatalogHeal(const FriendSituation& situation, const
         if (situation.lowestPartyHealthDelta <= FRIEND_HEALTH_DROP_NOTICE)
             score += 25;
 
-        if (flashHeal)
+        if (instantHeal)
+            score += danger ? 25 : (urgent ? 20 : (topOff ? 10 : 15));
+        if (fastHeal)
             score += danger ? 45 : (urgent ? 45 : -20);
-        if (bigHeal)
+        if (longHeal)
             score += danger ? -10 : (urgent ? 5 : (topOff ? -15 : 35));
-        if (smallHeal)
-            score += topOff ? 15 : (urgent ? -5 : 20);
+        if (mediumHeal)
+            score += topOff ? 10 : (urgent ? 15 : 25);
         if (targetHealth > sPlayerbotAIConfig.almostFullHealth && !ability.Has(FRIEND_ABILITY_HOT) && !ability.Has(FRIEND_ABILITY_SHIELD))
             score -= 35;
 
