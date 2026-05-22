@@ -29,7 +29,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v35";
+    const char* FRIEND_BOT_VERSION = "v36";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -2237,6 +2237,94 @@ Unit* FriendBotController::SelectDamageTarget(const FriendSituation& situation, 
     target = ai->GetUnit(situation.vulnerablePartyAttackerGuid);
     if (Unit* selected = consider(target, situation.healerPartyHasThreat ? "healer-threat" : "party-threat"))
         return selected;
+
+    struct AssistTarget
+    {
+        Unit* target;
+        int32 score;
+        uint32 health;
+        std::string reason;
+    };
+
+    std::vector<AssistTarget> assistTargets;
+    auto addAssistTarget = [&](Unit* candidate, const std::string& candidateReason, int32 score)
+    {
+        if (!IsValidFriendDamageTarget(candidate, true))
+            return;
+
+        if (ShouldAvoidBreakingCrowdControl(candidate))
+        {
+            if (!crowdControlFallback)
+            {
+                crowdControlFallback = candidate;
+                crowdControlReason = candidateReason + ":cc";
+            }
+            return;
+        }
+
+        score += (100 - HealthPercent(ai, candidate)) / 4;
+        if (Unit* victim = candidate->GetVictim())
+        {
+            if (victim == ai->GetBot())
+                score += 40;
+            else if (IsFriendlyTarget(ai, victim))
+                score += std::max<int32>(0, PartyThreatScore(victim));
+        }
+
+        for (AssistTarget& assistTarget : assistTargets)
+        {
+            if (assistTarget.target->GetObjectGuid() != candidate->GetObjectGuid())
+                continue;
+
+            assistTarget.score += score;
+            assistTarget.health = std::min(assistTarget.health, candidate->GetHealth());
+            if (candidateReason == "party-victim")
+                assistTarget.reason = candidateReason;
+            return;
+        }
+
+        assistTargets.push_back({ candidate, score, candidate->GetHealth(), candidateReason });
+    };
+
+    if (Group* group = ai->GetBot()->GetGroup())
+    {
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->getSource();
+            if (!member || member == ai->GetBot() || !member->IsAlive() ||
+                member->GetMapId() != ai->GetBot()->GetMapId() || !ai->IsSafe(member))
+                continue;
+
+            addAssistTarget(member->GetVictim(), "party-victim", 35);
+
+            Unit* selected = member->GetSelectionGuid() ? ai->GetUnit(member->GetSelectionGuid()) : nullptr;
+            if (selected && (sServerFacade.IsInCombat(member) || selected->IsInCombat() ||
+                (selected->GetVictim() && IsFriendlyTarget(ai, selected->GetVictim()))))
+                addAssistTarget(selected, "party-target", 20);
+        }
+    }
+
+    Unit* bestAssistTarget = nullptr;
+    std::string bestAssistReason;
+    int32 bestAssistScore = 0;
+    uint32 bestAssistHealth = 0;
+    for (const AssistTarget& assistTarget : assistTargets)
+    {
+        if (!bestAssistTarget || assistTarget.score > bestAssistScore ||
+            (assistTarget.score == bestAssistScore && assistTarget.health < bestAssistHealth))
+        {
+            bestAssistTarget = assistTarget.target;
+            bestAssistReason = assistTarget.reason;
+            bestAssistScore = assistTarget.score;
+            bestAssistHealth = assistTarget.health;
+        }
+    }
+
+    if (bestAssistTarget)
+    {
+        reason = bestAssistReason;
+        return bestAssistTarget;
+    }
 
     Unit* bestLowestHealth = nullptr;
     uint32 bestHealth = 0;
