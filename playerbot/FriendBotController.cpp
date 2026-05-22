@@ -25,7 +25,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v4";
+    const char* FRIEND_BOT_VERSION = "v5";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -187,6 +187,30 @@ namespace
     bool Contains(const std::string& value, const std::string& needle)
     {
         return value.find(needle) != std::string::npos;
+    }
+
+    const char* TravelStateName(const FriendSituation& situation)
+    {
+        if (situation.travelTargetWorking)
+            return "work";
+        if (situation.travelTargetTraveling)
+            return "move";
+        if (situation.travelTargetPreparing)
+            return "prep";
+        return "active";
+    }
+
+    void AppendTravelSummary(std::ostringstream& out, const FriendSituation& situation)
+    {
+        if (!situation.travelTargetActive && !situation.travelTargetPreparing &&
+            !situation.travelTargetTraveling && !situation.travelTargetWorking)
+            return;
+
+        out << ", travel=" << TravelStateName(situation);
+        if (!situation.travelTargetName.empty())
+            out << ":" << situation.travelTargetName;
+        if (situation.travelTargetDistanceKnown)
+            out << "@" << situation.travelTargetDistance << "y";
     }
 
     bool IsFriendMovementAction(const std::string& action)
@@ -624,6 +648,8 @@ std::string FriendBotController::FormatReport() const
     out << ", result=" << ResultName(lastResult);
     out << ", style=" << CombatStyleName(GetCombatStyle(lastSituation));
     out << ", target=" << (lastTargetReason.empty() ? "none" : lastTargetReason);
+    if (!lastSituation.targetName.empty())
+        out << ":" << lastSituation.targetName;
     out << ", hp=" << static_cast<uint32>(lastSituation.botHealth) << "%";
     out << ", mana=" << static_cast<uint32>(lastSituation.botMana) << "%";
     out << ", level=" << static_cast<uint32>(lastSituation.botLevel);
@@ -647,8 +673,7 @@ std::string FriendBotController::FormatReport() const
     if (lastSituation.partyHeadingActive)
         out << ", heading=" << static_cast<uint32>(lastSituation.partyHeadingConfidence) << "%";
     out << ", targets=" << static_cast<uint32>(lastSituation.possibleTargetsCount);
-    if (lastSituation.travelTargetActive || lastSituation.travelTargetPreparing)
-        out << ", travel=" << (lastSituation.travelTargetWorking ? "work" : (lastSituation.travelTargetTraveling ? "move" : "prep"));
+    AppendTravelSummary(out, lastSituation);
     if (nextResupplyAttemptAt > time(nullptr))
         out << ", resupplyCd=" << static_cast<uint32>(nextResupplyAttemptAt - time(nullptr)) << "s";
     if (lastSituation.nearestHostileGuid)
@@ -702,7 +727,17 @@ FriendSituation FriendBotController::BuildSituation()
                 travelStatus == TravelStatus::TRAVEL_STATUS_TRAVEL;
             situation.travelTargetWorking = travelStatus == TravelStatus::TRAVEL_STATUS_WORK;
             if (travelTarget->GetDestination())
+            {
                 situation.travelTargetPurpose = static_cast<uint32>(travelTarget->GetDestination()->GetPurpose());
+                situation.travelTargetName = travelTarget->GetDestination()->GetTitle();
+            }
+            if (travelTarget->GetPosition() && travelTarget->GetPosition()->getMapId() == bot->GetMapId())
+            {
+                situation.travelTargetDistanceKnown = true;
+                situation.travelTargetDistance = static_cast<uint32>(travelTarget->GetPosition()->distance(bot));
+                if (situation.travelTargetName.empty())
+                    situation.travelTargetName = travelTarget->GetPosition()->getAreaName(true, true);
+            }
         }
 
         uint32 vendorItems = context->GetValue<uint32>("item count", "vendor")->Get();
@@ -786,6 +821,7 @@ FriendSituation FriendBotController::BuildSituation()
             situation.hasTarget = true;
             situation.targetDistance = sServerFacade.GetDistance2d(bot, target);
             situation.targetIsElite = IsEliteTarget(ai, target);
+            situation.targetName = target->GetName();
         }
 
         Unit* rtiTarget = GetContextValue<Unit*>(context, "rti target", nullptr);
@@ -2878,6 +2914,7 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
     if (!IsSafeForTownChores(situation))
         return false;
 
+    const time_t now = time(nullptr);
     const bool serviceTravelTarget = resupplyTravelRequested && situation.travelTargetWorking &&
         (situation.travelTargetPurpose == FRIEND_VENDOR_TRAVEL_PURPOSE ||
          situation.travelTargetPurpose == FRIEND_REPAIR_TRAVEL_PURPOSE);
@@ -2887,9 +2924,14 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
     {
         resupplyTravelRequested = false;
         if (command != FriendCommand::Shop)
-            nextResupplyAttemptAt = time(nullptr) + FRIEND_RESUPPLY_RETRY_COOLDOWN;
-        if (TryAction("reset travel target", "friend resupply", 0, ai->GetBot()) == FriendExecutionResult::Done)
-            return true;
+            nextResupplyAttemptAt = now + FRIEND_RESUPPLY_RETRY_COOLDOWN;
+
+        TryAction("reset travel target", "friend resupply", 0, ai->GetBot());
+        if (command == FriendCommand::Shop)
+        {
+            command = FriendCommand::None;
+            ClearIdleState();
+        }
 
         SetResult(lastIntent, "shop blocked:no service npc", FriendExecutionResult::BlockedNotUseful);
         ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
@@ -2942,6 +2984,27 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
     if (TrySoftTownProgression(situation))
         return true;
 
+    if (serviceTravelTarget && expectedServiceNearby && NeedsTownChores(situation))
+    {
+        resupplyTravelRequested = false;
+        if (command != FriendCommand::Shop)
+            nextResupplyAttemptAt = now + FRIEND_RESUPPLY_RETRY_COOLDOWN;
+
+        TryAction("reset travel target", "friend resupply", 0, ai->GetBot());
+        if (command == FriendCommand::Shop)
+        {
+            command = FriendCommand::None;
+            ClearIdleState();
+            SetResult(lastIntent, "shop blocked:service action failed", FriendExecutionResult::BlockedNotUseful);
+        }
+        else
+        {
+            SetResult(lastIntent, "resupply deferred:service action failed", FriendExecutionResult::BlockedNotUseful);
+        }
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        return true;
+    }
+
     if (NeedsTownChores(situation) && TryTravelForResupply(situation))
         return true;
 
@@ -2950,6 +3013,10 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
         const bool blocked = NeedsTownChores(situation);
         if (blocked)
         {
+            resupplyTravelRequested = false;
+            TryAction("reset travel target", "friend resupply", 0, ai->GetBot());
+            command = FriendCommand::None;
+            ClearIdleState();
             SetResult(lastIntent, "shop blocked", FriendExecutionResult::BlockedNotUseful);
             ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
             return true;
@@ -2964,7 +3031,7 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
 
     if (NeedsTownChores(situation))
     {
-        nextResupplyAttemptAt = time(nullptr) + FRIEND_RESUPPLY_RETRY_COOLDOWN;
+        nextResupplyAttemptAt = now + FRIEND_RESUPPLY_RETRY_COOLDOWN;
         SetResult(lastIntent, "resupply deferred", FriendExecutionResult::BlockedNotUseful);
     }
 
@@ -3019,6 +3086,27 @@ bool FriendBotController::TryTravelForResupply(const FriendSituation& situation)
         }
 
         return false;
+    }
+
+    if (situation.travelTargetWorking && resupplyTravelRequested)
+    {
+        resupplyTravelRequested = false;
+        if (command != FriendCommand::Shop)
+            nextResupplyAttemptAt = time(nullptr) + FRIEND_RESUPPLY_RETRY_COOLDOWN;
+
+        TryAction("reset travel target", "friend resupply", 0, ai->GetBot());
+        if (command == FriendCommand::Shop)
+        {
+            command = FriendCommand::None;
+            ClearIdleState();
+            SetResult(lastIntent, "shop blocked:stale travel target", FriendExecutionResult::BlockedNotUseful);
+        }
+        else
+        {
+            SetResult(lastIntent, "resupply deferred:stale travel target", FriendExecutionResult::BlockedNotUseful);
+        }
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        return true;
     }
 
     if ((situation.travelTargetTraveling || situation.travelTargetActive) && resupplyTravelRequested)
@@ -3127,6 +3215,31 @@ bool FriendBotController::MoveToFriendTravelTarget(const FriendSituation& situat
     float x = destination.getX();
     float y = destination.getY();
     float z = destination.getZ();
+    if (serviceTravelTarget)
+    {
+        const float approachDistance = std::min<float>(INTERACTION_DISTANCE * 0.75f,
+            std::max<float>(1.8f, target->GetDestination()->GetRadiusMin() * 0.6f));
+        float angle = std::atan2(bot->GetPositionY() - destination.getY(), bot->GetPositionX() - destination.getX());
+        if (std::fabs(bot->GetPositionX() - destination.getX()) < 0.05f &&
+            std::fabs(bot->GetPositionY() - destination.getY()) < 0.05f)
+            angle = static_cast<float>(urand(0, 6283)) / 1000.0f;
+
+        float standX = destination.getX() + std::cos(angle) * approachDistance;
+        float standY = destination.getY() + std::sin(angle) * approachDistance;
+        float standZ = destination.getZ();
+        if (NormalizeFriendMovePosition(standX, standY, standZ))
+        {
+            WorldPosition standPoint(bot->GetMapId(), standX, standY, standZ);
+            if (from.canPathTo(standPoint, bot) &&
+                bot->IsWithinLOS(standX, standY, standZ + bot->GetCollisionHeight(), true))
+            {
+                x = standX;
+                y = standY;
+                z = standZ;
+            }
+        }
+    }
+
     if (!NormalizeFriendMovePosition(x, y, z))
         return false;
 
@@ -4523,8 +4636,30 @@ void FriendBotController::MaybeSayStatus(const FriendSituation& situation)
         return;
 
     std::ostringstream out;
-    out << "friend intent: " << IntentName(lastIntent);
-    out << " -> " << (lastAction.empty() ? ResultName(lastResult) : lastAction);
+    const std::string action = lastAction.empty() ? ResultName(lastResult) : lastAction;
+    out << "[" << IntentName(lastIntent) << "] " << action;
+    const bool travelAction = lastIntent == FriendIntent::Resupply ||
+        lastIntent == FriendIntent::Adventure ||
+        Contains(action, "travel");
+    if (travelAction && (situation.travelTargetActive || situation.travelTargetPreparing ||
+        situation.travelTargetTraveling || situation.travelTargetWorking))
+    {
+        out << " @ " << (situation.travelTargetName.empty() ? "travel target" : situation.travelTargetName);
+        if (situation.travelTargetDistanceKnown)
+            out << " " << situation.travelTargetDistance << "y";
+    }
+    else if (!situation.targetName.empty() &&
+        (lastIntent == FriendIntent::DealDamage ||
+         lastIntent == FriendIntent::PullWithParty ||
+         lastIntent == FriendIntent::CrowdControl ||
+         lastIntent == FriendIntent::SaveSelf ||
+         Contains(action, "spell:")))
+    {
+        out << " @ " << situation.targetName;
+        if (situation.targetDistance > 0.0f)
+            out << " " << static_cast<uint32>(situation.targetDistance) << "y";
+    }
+
     if (verbosity == FriendVerbosity::Debug)
     {
         out << " [" << ResultName(lastResult);
@@ -4543,6 +4678,8 @@ void FriendBotController::MaybeSayStatus(const FriendSituation& situation)
         out << "/" << (situation.partyInCombat ? "party" : "no");
         out << ", style " << CombatStyleName(GetCombatStyle(situation));
         out << ", target " << (lastTargetReason.empty() ? "none" : lastTargetReason);
+        if (!situation.targetName.empty())
+            out << ":" << situation.targetName;
         out << ", threat ";
         if (situation.botHasThreat)
             out << "self";
@@ -4577,8 +4714,14 @@ void FriendBotController::MaybeSayStatus(const FriendSituation& situation)
         if (nextResupplyAttemptAt > time(nullptr))
             out << " [resupply cd " << static_cast<uint32>(nextResupplyAttemptAt - time(nullptr)) << "s]";
         if (situation.travelTargetPreparing || situation.travelTargetTraveling || situation.travelTargetWorking)
-            out << " [travel " << (situation.travelTargetWorking ? "work" : (situation.travelTargetTraveling ? "move" : "prep"))
-                << " purpose=" << situation.travelTargetPurpose << "]";
+        {
+            out << " [travel " << TravelStateName(situation) << " purpose=" << situation.travelTargetPurpose;
+            if (!situation.travelTargetName.empty())
+                out << " " << situation.travelTargetName;
+            if (situation.travelTargetDistanceKnown)
+                out << " " << situation.travelTargetDistance << "y";
+            out << "]";
+        }
     }
 
     std::string statusLine = out.str();

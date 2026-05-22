@@ -123,6 +123,10 @@ namespace ai
         bool travelTargetTraveling = false;
         bool travelTargetWorking = false;
         uint32 travelTargetPurpose = 0;
+        bool travelTargetDistanceKnown = false;
+        uint32 travelTargetDistance = 0;
+        std::string travelTargetName;
+        std::string targetName;
         bool healerish = false;
         bool tankish = false;
         bool ranged = false;
