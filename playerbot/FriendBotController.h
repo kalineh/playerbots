@@ -251,6 +251,8 @@ namespace ai
             const std::string& action, std::initializer_list<const char*> lines);
         uint32 SelectGatherTravelPurpose() const;
         bool HasGatherSkill() const;
+        bool NormalizeFriendMovePosition(float& x, float& y, float& z) const;
+        bool MoveFriendPoint(float x, float y, float z);
         bool MoveInLeaderOrbit(const FriendSituation& situation, const std::string& action, bool urgent);
         bool PreferFreeDamage(const FriendSituation& situation) const;
         bool IsTargetSetupAction(const std::string& name) const;

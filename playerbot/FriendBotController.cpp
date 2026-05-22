@@ -1672,7 +1672,9 @@ bool FriendBotController::TryImproveRangedCombatSpacing(const FriendSituation& s
     if (!FindRangedCombatPosition(target, situation, x, y, z))
         return false;
 
-    bot->GetMotionMaster()->MovePoint(target->GetMapId(), x, y, z, FORCED_MOVEMENT_RUN, true);
+    if (!MoveFriendPoint(x, y, z))
+        return false;
+
     SetResult(lastIntent, action, FriendExecutionResult::Done);
     ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
     return true;
@@ -1722,7 +1724,8 @@ bool FriendBotController::FindRangedCombatPosition(Unit* target, const FriendSit
             x = target->GetPositionX() + std::cos(angle) * radius;
             y = target->GetPositionY() + std::sin(angle) * radius;
             z = target->GetPositionZ();
-            target->UpdateGroundPositionZ(x, y, z);
+            if (!NormalizeFriendMovePosition(x, y, z))
+                continue;
 
             if (IsRangedCombatPositionSafe(target, situation, x, y, z))
                 return true;
@@ -1861,17 +1864,18 @@ bool FriendBotController::MoveToUnitRange(Unit* target, float desiredDistance, c
     float x = target->GetPositionX() + dx * desiredDistance;
     float y = target->GetPositionY() + dy * desiredDistance;
     float z = target->GetPositionZ();
-    target->UpdateGroundPositionZ(x, y, z);
+    const bool normalized = NormalizeFriendMovePosition(x, y, z);
 
     WorldPosition from(bot);
-    WorldPosition to(target->GetMapId(), x, y, z);
-    if (!from.canPathTo(to, bot) || !bot->IsWithinLOS(x, y, z + bot->GetCollisionHeight(), true))
+    WorldPosition to(bot->GetMapId(), x, y, z);
+    if (!normalized || !from.canPathTo(to, bot) || !bot->IsWithinLOS(x, y, z + bot->GetCollisionHeight(), true))
     {
         bot->GetMotionMaster()->MoveChase(target, desiredDistance, bot->GetAngle(target));
     }
     else
     {
-        bot->GetMotionMaster()->MovePoint(target->GetMapId(), x, y, z, FORCED_MOVEMENT_RUN, true);
+        if (!MoveFriendPoint(x, y, z))
+            return false;
     }
 
     SetResult(lastIntent, action, FriendExecutionResult::Done);
@@ -2381,7 +2385,8 @@ bool FriendBotController::MoveToRecoverPosition(const FriendSituation& situation
     float x = bot->GetPositionX() + std::cos(away) * moveDistance;
     float y = bot->GetPositionY() + std::sin(away) * moveDistance;
     float z = bot->GetPositionZ();
-    bot->UpdateGroundPositionZ(x, y, z);
+    if (!NormalizeFriendMovePosition(x, y, z))
+        return false;
 
     WorldPosition from(bot);
     WorldPosition to(bot->GetMapId(), x, y, z);
@@ -2389,7 +2394,9 @@ bool FriendBotController::MoveToRecoverPosition(const FriendSituation& situation
         return false;
 
     ClearFriendMovement(false);
-    bot->GetMotionMaster()->MovePoint(bot->GetMapId(), x, y, z, FORCED_MOVEMENT_RUN, true);
+    if (!MoveFriendPoint(x, y, z))
+        return false;
+
     SetResult(lastIntent, "recover position", FriendExecutionResult::Done);
     ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
     return true;
@@ -2576,16 +2583,44 @@ bool FriendBotController::MoveToFriendTravelTarget(const FriendSituation& situat
     float x = destination.getX();
     float y = destination.getY();
     float z = destination.getZ();
-    bot->UpdateGroundPositionZ(x, y, z);
+    if (!NormalizeFriendMovePosition(x, y, z))
+        return false;
 
     WorldPosition to(bot->GetMapId(), x, y, z);
     if (!from.canPathTo(to, bot) || !bot->IsWithinLOS(x, y, z + bot->GetCollisionHeight(), true))
         return false;
 
     ClearFriendMovement(false);
-    bot->GetMotionMaster()->MovePoint(bot->GetMapId(), x, y, z, FORCED_MOVEMENT_RUN, true);
+    if (!MoveFriendPoint(x, y, z))
+        return false;
+
     SetResult(lastIntent, "move to travel target", FriendExecutionResult::Done);
     ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
+    return true;
+}
+
+bool FriendBotController::NormalizeFriendMovePosition(float& x, float& y, float& z) const
+{
+    if (!ai || !ai->GetBot())
+        return false;
+
+    Player* bot = ai->GetBot();
+    if (!bot->IsFlying() && !bot->IsFreeFlying() && !bot->IsSwimming())
+        bot->UpdateAllowedPositionZ(x, y, z);
+
+    return WorldPosition(bot->GetMapId(), x, y, z).isValid();
+}
+
+bool FriendBotController::MoveFriendPoint(float x, float y, float z)
+{
+    if (!ai || !ai->GetBot() || !ai->GetBot()->GetMotionMaster())
+        return false;
+
+    Player* bot = ai->GetBot();
+    if (!NormalizeFriendMovePosition(x, y, z))
+        return false;
+
+    bot->GetMotionMaster()->MovePoint(bot->GetMapId(), x, y, z, FORCED_MOVEMENT_RUN, true);
     return true;
 }
 
@@ -3554,7 +3589,8 @@ bool FriendBotController::MoveInLeaderOrbit(const FriendSituation& situation, co
     float x = leader->GetPositionX() + std::cos(angle) * distance;
     float y = leader->GetPositionY() + std::sin(angle) * distance;
     float z = leader->GetPositionZ();
-    leader->UpdateGroundPositionZ(x, y, z);
+    if (!NormalizeFriendMovePosition(x, y, z))
+        return false;
 
     WorldPosition from(bot);
     WorldPosition to(bot->GetMapId(), x, y, z);
@@ -3563,10 +3599,14 @@ bool FriendBotController::MoveInLeaderOrbit(const FriendSituation& situation, co
         x = leader->GetPositionX();
         y = leader->GetPositionY();
         z = leader->GetPositionZ();
+        if (!NormalizeFriendMovePosition(x, y, z))
+            return false;
     }
 
     ClearFriendMovement(false);
-    bot->GetMotionMaster()->MovePoint(leader->GetMapId(), x, y, z, FORCED_MOVEMENT_RUN, true);
+    if (!MoveFriendPoint(x, y, z))
+        return false;
+
     SetResult(lastIntent, action, FriendExecutionResult::Done);
     ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
     return true;
@@ -3599,8 +3639,9 @@ bool FriendBotController::MoveNearLeader(const FriendSituation& situation, const
     }
 
     ClearFriendMovement(false);
-    bot->GetMotionMaster()->MovePoint(leader->GetMapId(), leader->GetPositionX(),
-        leader->GetPositionY(), leader->GetPositionZ(), FORCED_MOVEMENT_RUN, true);
+    if (!MoveFriendPoint(leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ()))
+        return false;
+
     SetResult(lastIntent, action, FriendExecutionResult::Done);
     ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
     return true;
