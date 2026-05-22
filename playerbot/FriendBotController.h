@@ -3,6 +3,7 @@
 #include "Entities/ObjectGuid.h"
 #include "FriendAbilityCatalog.h"
 #include <ctime>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -198,6 +199,7 @@ namespace ai
         bool MoveToRecoverPosition(const FriendSituation& situation);
         bool ExecuteResupply(const FriendSituation& situation);
         bool TryTravelForResupply(const FriendSituation& situation);
+        bool MoveToResupplyTravelTarget(const FriendSituation& situation);
         bool IsSafeForTownChores(const FriendSituation& situation) const;
         bool NeedsTownChores(const FriendSituation& situation) const;
         bool ExecuteIdleGoal(const FriendSituation& situation);
@@ -214,8 +216,13 @@ namespace ai
         void ClearFriendMovement(bool includePointMove);
         void SetResult(FriendIntent intent, const std::string& action, FriendExecutionResult result);
         void MaybeSayStatus(const FriendSituation& situation);
+        void MaybeSayActivity(const FriendSituation& situation, const std::string& key,
+            std::initializer_list<const char*> lines, uint32 chancePercent = 100, uint32 cooldownSeconds = 30);
         void ResetTemporaryCommandIfSatisfied(const FriendSituation& situation);
         void ClearIdleState();
+        bool PrintInventory(Player* requester, const std::string& filter);
+        bool PrintEquipment(Player* requester, const std::string& slotName);
+        void PrintHelp(Player* requester) const;
 
         std::vector<std::string> PositionActions(const FriendSituation& situation) const;
         std::vector<std::string> SelfPreservationActions(const FriendSituation& situation) const;
@@ -256,6 +263,8 @@ namespace ai
         time_t idleGoalUntil = 0;
         time_t idleNextActionAt = 0;
         bool resupplyTravelRequested = false;
+        std::string lastActivityBark;
+        time_t nextActivityBarkAt = 0;
         FriendAbilityCatalog abilityCatalog;
     };
 }

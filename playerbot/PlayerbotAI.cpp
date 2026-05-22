@@ -94,6 +94,9 @@ namespace
             command == "shop" || command == "town" || command == "resupply" || command == "vendor" ||
             command == "attack" || command == "heal" || command == "heal me" || command == "buff" || command == "buff me" ||
             command == "summon" || command == "report" ||
+            command == "help" || command == "?" ||
+            command == "items" || command.find("items ") == 0 ||
+            command == "equip" || command.find("equip ") == 0 ||
             command == "verbose" || command == "intent" ||
             command == "debug" || command == "silent";
     }
