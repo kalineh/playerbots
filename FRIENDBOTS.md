@@ -1,4 +1,6 @@
-# Friend Bots Design Plan
+# Friend Bots Design Notes
+
+These are working notes for what we want friend bots to feel like and the architecture we are converging on. They are not a strict spec or permanent implementation mandate. Update them when testing shows the model is wrong, too complex, or missing an obvious case.
 
 ## Goal
 
@@ -18,21 +20,35 @@ Friend bots can spend more CPU than large-scale random bots, but they still need
 - Do not build a strict "tank/healer/DPS must perform perfectly" role system.
 - Do not add a heavy reactive micro-action layer. Friend mode should mostly evaluate between actions; if an action is cancelled or completes, the next evaluation can choose a better path.
 
-## Current Problem
+## Current Direction
 
-Current friend mode is mostly a modifier over the existing strategy engine:
+Friend mode is now intended to be a replacement top-level controller while friend mode is active, not a modifier over the normal strategy engine. The old approach was mostly:
 
 - `FriendStrategy` adds small random relevance changes and heal priority nudging.
 - `EnableFriendMode()` applies many existing class/spec/role strategies.
 - `Engine::addStrategy()` skips sibling-strategy removal while friend mode is active.
 
-This creates more variety, but it is still the same one-action-per-tick priority engine. The existing model is good for "perform this role/job" behavior, but weak for friend-like behavior because it lacks:
+That created some variety, but it was still the same one-action-per-tick priority engine. The newer controller approach is better for friend-like behavior because it can choose an intent first, then choose an action/task for that intent.
 
-- a persistent adventure goal;
+The main design risk now is state ownership. Testing showed that behavior becomes fragile when `mode`, `command`, idle goals, travel flags, and legacy travel targets all partially own decisions. The stable model should be:
+
+```text
+mode/command/situation
+  -> score top-level intents
+  -> pick one intent
+  -> score actions/tasks for that intent
+  -> continue or update small execution state
+  -> execute one concrete step
+```
+
+Avoid hidden sub-selectors like `Adventure -> idleGoal -> travel flags`. If the bot may resupply, explore, grind, gather, loot, or hang out, those should be direct intent candidates in the same weighted intent pass.
+
+The controller still needs:
+
 - a continuous party participation decision;
 - a standing positioning plan;
 - an explicit fight pressure model;
-- intent-level reasoning before ability selection;
+- cleaner execution state for multi-step tasks;
 - clear reasons for idle, impossible, blocked, or unsafe actions.
 
 ## Top-Level Architecture
@@ -63,19 +79,19 @@ Friend mode should be built as a small stateful controller with these layers:
 
 ```text
 Mode / Command
-  -> Adventure Goal / Party Participation
   -> Situation Snapshot
   -> Positioning Plan
-  -> Intent Ranking
-  -> Ability / Action Selection
+  -> Intent Scoring
+  -> Action / Task Scoring
+  -> Execution State
   -> Execution
 ```
 
 Each layer should produce simple, inspectable outputs for debugging.
 
-## Mode, Command, And Goal Layer
+## Mode, Commands, And Intent Weights
 
-Friend bots separate long-lived social policy from temporary explicit commands and current idle/adventure goals.
+Friend bots separate long-lived social policy from temporary explicit commands and current task execution state.
 
 Modes:
 
@@ -94,7 +110,19 @@ Commands:
 - `shop` / `town` / `resupply`: temporarily prioritize town chores, then clear back to the current mode.
 - `attack`, `heal`, `buff`: short tactical pushes without changing mode.
 
-Goals are the current non-urgent activity, such as `resupply`, `loot`, `recover`, `orbit`, `loiter`, `gather`, or `grind`. Commands can force or heavily weight a goal, but goals should clear naturally when complete.
+Modes and commands should mostly change intent weights. They should not create a second hidden behavior system.
+
+Examples:
+
+- `party` boosts return, help, loot, light grind, light gather, light explore, and hang-out behavior.
+- `solo` boosts grind, gather, explore, resupply, and independent travel.
+- `dungeon` suppresses casual explore, gather, loose pulls, and town chores.
+- `shop` gives `Resupply` a very high temporary weight.
+- `attack` gives combat and pull intents a high temporary weight.
+- `heal` gives healing intents a high temporary weight.
+- `come` and `stop` are hard overrides, not just weights.
+
+Non-combat activities such as `Resupply`, `Explore`, `Grind`, `Gather`, `LootNearby`, and `HangOut` are top-level intents. They should not live inside a separate `Adventure` sub-selector.
 
 The human party leader/master should usually be the strongest social anchor. Friend bots can still care about the tank, healer, and party cluster, but when in doubt they should prefer staying useful to the human leader over optimizing around an inferred role layout.
 
@@ -115,14 +143,14 @@ Being in a party does not always mean every bot should immediately abandon its c
 Friend mode should compare:
 
 ```text
-current_goal_value
+current_task_value
 vs
 party_help_value - travel_cost - abandonment_cost
 ```
 
 Examples:
 
-- A bot on a `resupply` town goal should ignore routine party grinding.
+- A bot executing a `Resupply` town task should ignore routine party grinding.
 - The same bot should return if the master, tank, or healer is in serious danger and return is realistic.
 - A bot exploring nearby should finish or escape a local 1v1 before trying to help distant party combat.
 - In dungeons, the threshold to rejoin/help should be much lower and most splitting should be disallowed.
@@ -136,11 +164,11 @@ Useful inputs:
 - party leader/master danger;
 - likely tank/healer danger when inferable;
 - local danger around the bot;
-- current command/goal interruptibility;
+- current command/task interruptibility;
 - time already spent away;
 - dungeon/world/battleground context.
 
-Use stickiness: goals should not flip every few seconds because the party tagged another mob.
+Use stickiness: selected intents/tasks should not flip every few seconds because the party tagged another mob.
 
 ## Situation Snapshot
 
@@ -150,7 +178,7 @@ Suggested fields:
 
 - bot health, mana, cooldown posture, movement state;
 - recent bot health/mana deltas;
-- current mode, command, and goal;
+- current mode, command, selected intent, and execution state;
 - local attackers and attackers targeting the bot;
 - main party cluster and local cluster;
 - party lowest HP and number of damaged members;
@@ -183,7 +211,7 @@ Suggested posture states:
 The positioning plan should evaluate:
 
 - anchor: master, tank, party center, current target, assigned hold point;
-- leader weighting: prefer the human leader/master as the default anchor unless command, goal, or immediate danger says otherwise;
+- leader weighting: prefer the human leader/master as the default anchor unless command, selected intent, execution state, or immediate danger says otherwise;
 - preferred range band;
 - maximum leash distance;
 - whether the bot is ahead of the tank/master;
@@ -208,8 +236,22 @@ This layer should prevent oscillation like running into melee for one swing, the
 
 Friend mode should choose an intent first, then pick the best ability/action for that intent. This is better than flat-scanning every spell as an independent top-level action.
 
+Intent selection should be a single weighted pass:
+
+```text
+mode weights
++ command weights
++ situation weights
++ short-term memory penalties/bonuses
+=> ranked intents
+```
+
+Do not add a nested `Adventure` intent that then picks its own hidden goal. If the bot might resupply, explore, grind, gather, loot, or hang out, those are direct intent candidates in the same ranking pass as combat/support intents.
+
 Initial intents:
 
+- `ReturnToParty`
+- `HoldPosition`
 - `SaveSelf`
 - `SavePartyMember`
 - `GetToSafety`
@@ -225,11 +267,16 @@ Initial intents:
 - `Cure`
 - `TradeSupport`
 - `LootNearby`
+- `Resupply`
+- `Gather`
+- `Grind`
+- `Explore`
+- `HangOut`
 - `FollowOrIdle`
 
 Intent ranking should account for:
 
-- mode, command, and goal;
+- mode, command, and execution state;
 - fight pressure;
 - party health and role needs;
 - local threat;
@@ -312,10 +359,34 @@ Should I try to make this possible?
 Should I move first?
 Should I wait?
 Is this unsafe in this context?
-Is this compatible with my current mode, command, goal, and posture?
+Is this compatible with my current mode, command, selected intent, execution state, and posture?
 ```
 
 Some existing actions may need friend-specific wrappers or replacements where they silently fail, move poorly, or hide important reasons from the controller.
+
+## Execution State
+
+Execution state exists only to carry a chosen multi-step task across ticks. It is not another intent selector.
+
+It should answer:
+
+- what task is currently being executed;
+- what concrete target or point it is using;
+- what phase it is in;
+- when it started and when it expires;
+- why it last failed or deferred;
+- whether it can be interrupted by a higher-priority intent or command.
+
+Examples:
+
+- `Resupply`: chosen vendor/repair NPC or town target, phase `choose target -> move near vendor -> sell/repair/buy -> done`.
+- `Explore`: chosen safe waypoint or area, phase `move -> look around -> done`.
+- `Grind`: chosen nearby target or grind area, phase `pick safe target -> pull/attack -> recover if needed`.
+- `Gather`: chosen object/node, phase `move near -> gather/loot -> done`.
+
+Execution state prevents thrashing. Without it, a bot may request a vendor, move three yards, re-roll `HangOut`, clear travel, then request a vendor again. With it, the bot can remember "I am doing Resupply at Vendor X" while still allowing urgent intents like `SaveSelf`, `HealParty`, `Come`, or `Stop` to interrupt.
+
+Execution state should be small and explicit. It should not own broad policy, mode behavior, party participation, or intent priority. Those belong to the main intent scoring pass.
 
 ## Execution Results
 
@@ -340,7 +411,7 @@ These results should feed diagnostics and short-term decision memory.
 
 ## Resource Model
 
-Resource use should depend on fight pressure, mode, command, and goal.
+Resource use should depend on fight pressure, mode, command, selected intent, and execution state.
 
 Suggested resource modes:
 
@@ -356,7 +427,7 @@ Examples:
 - High pressure: burn mana and use strong abilities.
 - Critical pressure: potions, healthstones, cooldowns, emergency heals.
 
-Do not make mana-saving a static class rule. Tie it to party pressure and current mode/goal.
+Do not make mana-saving a static class rule. Tie it to party pressure, current mode, and selected intent.
 
 Pressure should include trends, not just current values. A tank at 70% HP and falling fast is very different from a tank at 70% HP and stable. Track recent HP/resource deltas and use them to softly project near-future danger.
 
@@ -444,7 +515,7 @@ Friend mode needs built-in reporting from the start.
 
 `friend ?` should report:
 
-- current mode/command/goal;
+- current mode/command/execution state;
 - party participation decision;
 - fight pressure;
 - posture and desired anchor/range;
@@ -454,6 +525,13 @@ Friend mode needs built-in reporting from the start.
 - top rejected reasons.
 
 This is essential for tuning. Without it, failures will look like random idling.
+
+A separate debug toggle should print full intent/action weights. This must be separate from normal `intent` or `debug` reporting because candidate weights are noisy. Suggested levels:
+
+- `silent`: no routine reporting.
+- `intent`: selected intent/action changes only.
+- `debug`: selected result plus compact situation details.
+- `weights`: top intent weights and top action/task weights for the selected intent.
 
 ## Risks And Mitigations
 
@@ -467,7 +545,7 @@ Approach: implement the all-class baseline before detailed class flavor. Every c
 
 Risk: bots may never finish errands, or may ignore the party too long while away.
 
-Approach: every command/goal needs start conditions, completion conditions, failure conditions, max duration, interrupt threshold, and return behavior.
+Approach: every multi-step task needs start conditions, completion conditions, failure conditions, max duration, interrupt threshold, and return behavior.
 
 ### Split Party Confusion
 
@@ -511,62 +589,41 @@ Risk: chill behavior may underperform in elites or hard encounters.
 
 Approach: let pressure rise from HP deltas, long target lifetime, elite status, and resource strain. Burn stronger tools under high pressure, but keep the behavior understandable and not encounter-scripted unless necessary.
 
-## Phased Implementation
+## Current Cleanup Direction
 
-### Phase 1: Mode Ownership
+These notes reflect the direction after testing the first friend controller passes.
 
-- Add a friend controller owned by `PlayerbotAI`.
-- Hook friend mode before the normal engine and return unconditionally.
-- Change friend activation so it no longer applies every candidate strategy as the main behavior.
-- Keep normal bots untouched.
-- Preserve `strict`/disable behavior.
+Keep:
 
-### Phase 2: Snapshot And Diagnostics
+- friend mode owns the top-level tick and returns without normal-engine fallback;
+- `FriendSituation` as the compact snapshot;
+- ability catalog and metadata-based action selection;
+- existing spell/item/loot/vendor actions as low-level executors where they behave;
+- soft roles, pressure-based resource use, and leader-weighted party behavior.
 
-- Build `FriendSituation`.
-- Add basic `friend ?` reporting.
-- Include mode, command, goal, party pressure, HP/resource deltas, local danger, resources, posture, and last action result.
+Clean up:
 
-### Phase 3: Positioning
+- remove the hidden `Adventure`/`idleGoal` decision layer as a behavior owner;
+- promote `Resupply`, `Explore`, `Grind`, `Gather`, `LootNearby`, and `HangOut` into top-level weighted intents;
+- make modes and temporary commands only adjust intent weights, except true hard overrides such as `stop` and `come`;
+- replace scattered booleans such as "resupply travel requested" and "idle travel requested" with one small execution-state record;
+- avoid using legacy travel target state as the friend task owner. It can be reused as a path/target provider, but friend mode should own the task phase and completion/failure reasons;
+- add a separate `weights` debug toggle for intent/action score dumps;
+- keep friend-specific movement consistent with the same task/execution-state model.
 
-- Add `FriendPositioning`.
-- Implement `stay close`, `come`, `hold`, and ranged/close-support posture.
-- Use existing movement actions where acceptable.
-- Add friend-specific movement helpers only where existing actions hide too much or cause bad movement.
+The next architecture cleanup should make the tick read roughly:
 
-### Phase 4: Intent Selector
+```text
+BuildSituation
+ScoreIntents(mode, command, situation, executionState)
+SelectIntent
+ScoreActionsForIntent(intent, situation, executionState)
+ExecuteSelectedActionOrTaskStep
+UpdateExecutionState
+ReportResult
+```
 
-- Implement initial intents:
-  - `SaveSelf`
-  - `SavePartyMember`
-  - `GetToSafety`
-  - `StabilizePosition`
-  - `DealDamage`
-  - `ConserveDamage`
-  - `RecoverResources`
-  - `Buff`
-  - `FollowOrIdle`
-- Add fight pressure and resource mode.
-
-### Phase 5: Ability Selection Baseline
-
-- Implement ability metadata and generic category processors.
-- Add baseline ability catalogs for every class.
-- Reuse existing actions for execution.
-- Add result tracking for blocked/unsafe/idled cases.
-
-### Phase 6: Assignments And Splitting
-
-- Add richer explore, scout/pull, and town errand goals.
-- Add party participation scoring and interruption thresholds.
-- Add dungeon restrictions and leash rules.
-
-### Phase 7: Polish And Expansion
-
-- Add useful trading/resource support.
-- Add opportunistic loot outside danger.
-- Tune class profiles and class flavor.
-- Remove or narrow old friend-mode strategy side effects and sibling-strategy bypass once no longer needed.
+If a selected intent cannot produce a useful action, it should return a clear rejected reason and let the next tick re-score. It should not silently fall into a separate old strategy path.
 
 ## Implementation Principle
 
@@ -575,7 +632,7 @@ Friend mode should be a readable controller with explicit state and explicit rea
 When behavior is wrong, we should be able to ask:
 
 ```text
-What mode, command, and goal are active?
+What mode, command, selected intent, and execution state are active?
 What did the bot think the party state was?
 Where did it want to stand?
 What intent won?
