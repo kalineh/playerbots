@@ -172,6 +172,7 @@ void FriendBotController::Reset()
     nextSoftTrainingAt = 0;
     nextSoftBagUpgradeAt = 0;
     nextSoftGearUpgradeAt = 0;
+    lastPlanningBusyAt = time(nullptr);
     lastActivityBark.clear();
     nextActivityBarkAt = 0;
     abilityCatalog.Reset();
@@ -515,6 +516,7 @@ std::string FriendBotController::FormatReport() const
         out << "/" << static_cast<uint32>(lastSituation.leaderLevel);
     out << ", bag=" << static_cast<uint32>(lastSituation.bagSpace) << "%";
     out << ", dur=" << static_cast<uint32>(lastSituation.durability) << "%";
+    out << ", calm=" << lastSituation.calmDowntimeSeconds << "s";
     out << ", partyHp=" << static_cast<uint32>(lastSituation.lowestPartyHealth) << "%";
     out << ", balance=" << BalanceName(lastSituation.balance);
     if (lastSituation.botHasThreat)
@@ -763,6 +765,15 @@ FriendSituation FriendBotController::BuildSituation()
             situation.leaderTargetGuid = leaderTarget->GetObjectGuid();
     }
 
+    const time_t now = time(nullptr);
+    const bool busyPlanningState = situation.inCombat || situation.partyInCombat || situation.hasAttackers ||
+        situation.travelTargetPreparing || situation.travelTargetTraveling ||
+        (situation.travelTargetActive && !situation.travelTargetWorking) ||
+        sServerFacade.isMoving(bot);
+    if (busyPlanningState || !lastPlanningBusyAt)
+        lastPlanningBusyAt = now;
+
+    situation.calmDowntimeSeconds = static_cast<uint32>(std::max<time_t>(0, now - lastPlanningBusyAt));
     return situation;
 }
 
@@ -2635,21 +2646,22 @@ bool FriendBotController::WantsTownProgression(const FriendSituation& situation)
     const bool majorLevelGap = levelGap >= 3;
     const bool manualShop = command == FriendCommand::Shop;
     const bool soloAutonomy = mode == FriendMode::Solo;
+    const bool planningWindow = alreadyTownReady || manualShop || situation.calmDowntimeSeconds >= 45;
 
     if (!manualShop && !soloAutonomy)
         return false;
 
     const time_t now = time(nullptr);
-    if (levelGap > 0 && now >= nextSoftLevelCatchupAt && (alreadyTownReady || manualShop || majorLevelGap))
+    if (levelGap > 0 && now >= nextSoftLevelCatchupAt && (alreadyTownReady || manualShop || (majorLevelGap && planningWindow)))
         return true;
 
-    if (situation.shouldTrain && now >= nextSoftTrainingAt && (alreadyTownReady || manualShop))
+    if (situation.shouldTrain && now >= nextSoftTrainingAt && planningWindow)
         return true;
 
-    if (situation.shouldUpgradeBags && now >= nextSoftBagUpgradeAt && (alreadyTownReady || manualShop))
+    if (situation.shouldUpgradeBags && now >= nextSoftBagUpgradeAt && planningWindow)
         return true;
 
-    return situation.shouldUpgradeGear && now >= nextSoftGearUpgradeAt && (alreadyTownReady || manualShop);
+    return situation.shouldUpgradeGear && now >= nextSoftGearUpgradeAt && planningWindow;
 }
 
 bool FriendBotController::TrySoftTownProgression(const FriendSituation& situation)
@@ -3645,6 +3657,7 @@ void FriendBotController::MaybeSayStatus(const FriendSituation& situation)
         out << "(" << static_cast<uint32>(situation.attackersTargetingMeCount) << ")";
         out << ", leader " << static_cast<uint32>(situation.leaderDistance);
         out << ", targetDist " << static_cast<uint32>(situation.targetDistance);
+        out << ", calm " << situation.calmDowntimeSeconds << "s";
         out << ", " << BalanceName(situation.balance);
         out << ", targets " << static_cast<uint32>(situation.possibleTargetsCount) << "]";
         if (situation.crowdControlledTargets)

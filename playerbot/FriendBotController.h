@@ -140,6 +140,7 @@ namespace ai
         uint32 money = 0;
         uint32 trainCost = 0;
         uint32 gearBudget = 0;
+        uint32 calmDowntimeSeconds = 0;
         uint8 lowestPartyHealth = 100;
         int32 lowestPartyHealthDelta = 0;
         uint8 damagedPartyMembers = 0;
@@ -317,6 +318,7 @@ namespace ai
         time_t nextSoftTrainingAt = 0;
         time_t nextSoftBagUpgradeAt = 0;
         time_t nextSoftGearUpgradeAt = 0;
+        time_t lastPlanningBusyAt = 0;
         std::string lastActivityBark;
         time_t nextActivityBarkAt = 0;
         FriendAbilityCatalog abilityCatalog;
