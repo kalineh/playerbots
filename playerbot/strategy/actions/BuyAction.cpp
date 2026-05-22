@@ -23,6 +23,7 @@ namespace
 bool BuyAction::Execute(Event& event)
 {
     Player* requester = event.getOwner() ? event.getOwner() : GetMaster();
+    const bool friendMode = ai && ai->IsFriendMode();
     bool buyUseful = false;
     ItemIds itemIds;
     std::string link = event.getParam();
@@ -203,7 +204,8 @@ bool BuyAction::Execute(Event& event)
                 if (!result)
                 {
                     std::ostringstream out; out << "Nobody sells " << ChatHelper::formatItem(proto) << " nearby";
-                    ai->TellPlayer(requester, out.str(), PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, false);
+                    if (!friendMode)
+                        ai->TellPlayer(requester, out.str(), PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, false);
                 }
             }
         }
@@ -211,10 +213,11 @@ bool BuyAction::Execute(Event& event)
 
     if (!vendored)
     {
-        ai->TellError(requester, "There are no vendors nearby");
+        if (!friendMode)
+            ai->TellError(requester, "There are no vendors nearby");
         return false;
     }
-    else
+    else if (!friendMode)
     {
         for (auto& [usage, boughtList] : bought)
         {
@@ -236,6 +239,7 @@ bool BuyAction::Execute(Event& event)
 
 bool BuyAction::BuyItem(Player* requester, VendorItemData const* tItems, ObjectGuid vendorguid, const ItemPrototype* proto, UsageBoughtList& bought, ItemUsage usage)
 {
+    const bool friendMode = ai && ai->IsFriendMode();
     uint32 oldCount = AI_VALUE2(uint32, "item count", proto->Name1);
 
     if (!tItems)
@@ -268,19 +272,24 @@ bool BuyAction::BuyItem(Player* requester, VendorItemData const* tItems, ObjectG
 
                 if (usage == ItemUsage::ITEM_USAGE_NONE)
                 {
-
-                    std::ostringstream out; out << "Buying " << ChatHelper::formatItem(proto);
-                    ai->TellPlayer(requester, out.str(), PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, false);
+                    if (!friendMode)
+                    {
+                        std::ostringstream out; out << "Buying " << ChatHelper::formatItem(proto);
+                        ai->TellPlayer(requester, out.str(), PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, false);
+                    }
                 }
                 else if (usage == ItemUsage::ITEM_USAGE_EQUIP) //We need to put these here since we are only buying 1 (hopefully) and need to report ReasonForNeed with old item still equiped.
                 {
-                    ItemQualifier qualifier(proto->ItemId);
+                    if (!friendMode)
+                    {
+                        ItemQualifier qualifier(proto->ItemId);
 
-                    std::ostringstream out;
+                        std::ostringstream out;
 
-                    out << "Buying " << ChatHelper::formatItem(qualifier) << " ";
-                    out << ItemUsageValue::ReasonForNeed(usage, qualifier, 1, bot);
-                    ai->TellPlayer(requester, out.str(), PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, false);
+                        out << "Buying " << ChatHelper::formatItem(qualifier) << " ";
+                        out << ItemUsageValue::ReasonForNeed(usage, qualifier, 1, bot);
+                        ai->TellPlayer(requester, out.str(), PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, false);
+                    }
                 }
                 else
                 {
