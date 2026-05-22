@@ -152,6 +152,10 @@ namespace ai
         float leaderDistance = 0.0f;
         float targetDistance = 0.0f;
         float nearestHostileDistance = 0.0f;
+        bool partyHeadingActive = false;
+        uint8 partyHeadingConfidence = 0;
+        float partyHeadingX = 0.0f;
+        float partyHeadingY = 0.0f;
         ObjectGuid leaderGuid;
         ObjectGuid nearestHostileGuid;
         ObjectGuid closestAttackerTargetingMeGuid;
@@ -255,6 +259,8 @@ namespace ai
             const std::string& action, std::initializer_list<const char*> lines);
         uint32 SelectGatherTravelPurpose() const;
         bool HasGatherSkill() const;
+        void UpdatePartyHeading(FriendSituation& situation, Unit* leader);
+        bool IsIdleMovePositionSafe(const FriendSituation& situation, Unit* leader, float x, float y, float z) const;
         bool NormalizeFriendMovePosition(float& x, float& y, float& z) const;
         bool MoveFriendPoint(float x, float y, float z);
         bool MoveInLeaderOrbit(const FriendSituation& situation, const std::string& action, bool urgent);
@@ -327,6 +333,14 @@ namespace ai
         time_t lastPlanningBusyAt = 0;
         std::string lastActivityBark;
         time_t nextActivityBarkAt = 0;
+        ObjectGuid lastLeaderHeadingGuid;
+        uint32 lastLeaderHeadingMap = 0;
+        time_t lastLeaderHeadingAt = 0;
+        float lastLeaderHeadingX = 0.0f;
+        float lastLeaderHeadingY = 0.0f;
+        float partyHeadingX = 0.0f;
+        float partyHeadingY = 0.0f;
+        uint8 partyHeadingConfidence = 0;
         FriendAbilityCatalog abilityCatalog;
     };
 }

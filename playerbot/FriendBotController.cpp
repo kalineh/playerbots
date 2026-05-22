@@ -53,6 +53,11 @@ namespace
     const uint32 FRIEND_SOFT_GEAR_UPGRADE_COOLDOWN = 10 * MINUTE;
     const uint32 FRIEND_PROPOSAL_COOLDOWN = 5 * MINUTE;
     const uint32 FRIEND_PROPOSAL_REJECT_COOLDOWN = 10 * MINUTE;
+    const uint32 FRIEND_HEADING_SAMPLE_SECONDS = 3;
+    const float FRIEND_HEADING_MIN_STEP = 2.5f;
+    const float FRIEND_HEADING_MAX_STEP = 70.0f;
+    const uint8 FRIEND_HEADING_MIN_CONFIDENCE = 35;
+    const float FRIEND_IDLE_MOVE_HOSTILE_BUFFER = 12.0f;
 
     uint32 FriendVendorNpcFlags()
     {
@@ -145,6 +150,17 @@ namespace
 
         return value;
     }
+
+    bool Normalize2d(float& x, float& y)
+    {
+        float length = std::sqrt(x * x + y * y);
+        if (length < 0.1f)
+            return false;
+
+        x /= length;
+        y /= length;
+        return true;
+    }
 }
 
 FriendBotController::FriendBotController(PlayerbotAI* ai) : ai(ai)
@@ -187,6 +203,14 @@ void FriendBotController::Reset()
     lastPlanningBusyAt = time(nullptr);
     lastActivityBark.clear();
     nextActivityBarkAt = 0;
+    lastLeaderHeadingGuid = ObjectGuid();
+    lastLeaderHeadingMap = 0;
+    lastLeaderHeadingAt = 0;
+    lastLeaderHeadingX = 0.0f;
+    lastLeaderHeadingY = 0.0f;
+    partyHeadingX = 0.0f;
+    partyHeadingY = 0.0f;
+    partyHeadingConfidence = 0;
     abilityCatalog.Reset();
 }
 
@@ -540,6 +564,8 @@ std::string FriendBotController::FormatReport() const
     else if (lastSituation.vulnerablePartyHasThreat)
         out << ", threat=party";
     out << ", leaderDist=" << static_cast<uint32>(lastSituation.leaderDistance);
+    if (lastSituation.partyHeadingActive)
+        out << ", heading=" << static_cast<uint32>(lastSituation.partyHeadingConfidence) << "%";
     out << ", targets=" << static_cast<uint32>(lastSituation.possibleTargetsCount);
     if (lastSituation.travelTargetActive || lastSituation.travelTargetPreparing)
         out << ", travel=" << (lastSituation.travelTargetWorking ? "work" : (lastSituation.travelTargetTraveling ? "move" : "prep"));
@@ -782,6 +808,8 @@ FriendSituation FriendBotController::BuildSituation()
         if (IsHostileTarget(ai, leaderTarget))
             situation.leaderTargetGuid = leaderTarget->GetObjectGuid();
     }
+
+    UpdatePartyHeading(situation, leader);
 
     const time_t now = time(nullptr);
     const bool busyPlanningState = situation.inCombat || situation.partyInCombat || situation.hasAttackers ||
@@ -3450,6 +3478,8 @@ FriendIdleGoal FriendBotController::SelectIdleGoal(const FriendSituation& situat
     uint32 gatherBias = (personality / 7) % 30;
     uint32 grindBias = (personality / 13) % 30;
     const uint32 boredom = std::min<uint32>(80, situation.calmDowntimeSeconds);
+    const uint32 forwardBias = (mode != FriendMode::Dungeon && situation.partyHeadingActive) ?
+        static_cast<uint32>(situation.partyHeadingConfidence) : 0;
     const bool canGather = HasGatherSkill();
     const bool partyComfortable = situation.leaderSafe &&
         situation.leaderDistance <= SoftLeashDistance(situation) &&
@@ -3471,20 +3501,20 @@ FriendIdleGoal FriendBotController::SelectIdleGoal(const FriendSituation& situat
             goals.push_back({ FriendIdleGoal::Resupply, 100 });
 
         if (situation.possibleTargetsCount > 0 && situation.botMana >= sPlayerbotAIConfig.lowMana)
-            goals.push_back({ FriendIdleGoal::GrindNearby, 110 + grindBias + boredom });
+            goals.push_back({ FriendIdleGoal::GrindNearby, 110 + grindBias + boredom + forwardBias / 4 });
         else if (!NeedsTownChores(situation) && situation.botHealth >= sPlayerbotAIConfig.almostFullHealth &&
             situation.botMana >= sPlayerbotAIConfig.lowMana)
-            goals.push_back({ FriendIdleGoal::TravelToGrind, 100 + grindBias + boredom });
+            goals.push_back({ FriendIdleGoal::TravelToGrind, 100 + grindBias + boredom + forwardBias / 3 });
 
         if (canGather)
         {
             goals.push_back({ FriendIdleGoal::GatherNearby, 40 + gatherBias + boredom / 2 });
             if (!NeedsTownChores(situation))
-                goals.push_back({ FriendIdleGoal::TravelToGather, 40 + gatherBias / 2 + boredom / 2 });
+                goals.push_back({ FriendIdleGoal::TravelToGather, 40 + gatherBias / 2 + boredom / 2 + forwardBias / 4 });
         }
 
         if (!NeedsTownChores(situation) && !situation.possibleTargetsCount)
-            goals.push_back({ FriendIdleGoal::ExploreNearby, 35 + boredom / 2 });
+            goals.push_back({ FriendIdleGoal::ExploreNearby, 35 + boredom / 2 + forwardBias / 3 });
     }
     else
     {
@@ -3498,16 +3528,16 @@ FriendIdleGoal FriendBotController::SelectIdleGoal(const FriendSituation& situat
         {
             goals.push_back({ FriendIdleGoal::GatherNearby, 28 + gatherBias + boredom / 3 });
             if (!NeedsTownChores(situation))
-                goals.push_back({ FriendIdleGoal::TravelToGather, 8 + gatherBias / 4 + boredom / 5 });
+                goals.push_back({ FriendIdleGoal::TravelToGather, 8 + gatherBias / 4 + boredom / 5 + forwardBias / 8 });
         }
 
         if (partyComfortable && situation.possibleTargetsCount > 0 && situation.botMana >= sPlayerbotAIConfig.mediumMana)
-            goals.push_back({ FriendIdleGoal::GrindNearby, 42 + grindBias + boredom / 2 });
+            goals.push_back({ FriendIdleGoal::GrindNearby, 42 + grindBias + boredom / 2 + forwardBias / 6 });
         else if (partyComfortable && !NeedsTownChores(situation) &&
             situation.botMana >= sPlayerbotAIConfig.mediumMana)
         {
-            goals.push_back({ FriendIdleGoal::TravelToGrind, 10 + grindBias / 3 + boredom / 5 });
-            goals.push_back({ FriendIdleGoal::ExploreNearby, 12 + boredom / 4 });
+            goals.push_back({ FriendIdleGoal::TravelToGrind, 10 + grindBias / 3 + boredom / 5 + forwardBias / 8 });
+            goals.push_back({ FriendIdleGoal::ExploreNearby, 12 + boredom / 4 + forwardBias / 6 });
         }
     }
 
@@ -3800,6 +3830,170 @@ bool FriendBotController::HasGatherSkill() const
     return SelectGatherTravelPurpose() != 0;
 }
 
+void FriendBotController::UpdatePartyHeading(FriendSituation& situation, Unit* leader)
+{
+    auto publish = [&]()
+    {
+        if (partyHeadingConfidence >= FRIEND_HEADING_MIN_CONFIDENCE)
+        {
+            float x = partyHeadingX;
+            float y = partyHeadingY;
+            if (Normalize2d(x, y))
+            {
+                situation.partyHeadingActive = true;
+                situation.partyHeadingConfidence = partyHeadingConfidence;
+                situation.partyHeadingX = x;
+                situation.partyHeadingY = y;
+            }
+        }
+    };
+
+    auto decay = [&](uint8 amount)
+    {
+        partyHeadingConfidence = amount >= partyHeadingConfidence ? 0 : static_cast<uint8>(partyHeadingConfidence - amount);
+        if (!partyHeadingConfidence)
+        {
+            partyHeadingX = 0.0f;
+            partyHeadingY = 0.0f;
+        }
+
+        publish();
+    };
+
+    if (!ai || !ai->GetBot())
+        return;
+
+    Player* bot = ai->GetBot();
+    if (mode == FriendMode::Dungeon || !leader || !situation.leaderSafe ||
+        leader->GetMapId() != bot->GetMapId() || !ai->IsSafe(leader))
+    {
+        decay(20);
+        return;
+    }
+
+    const time_t now = time(nullptr);
+    const ObjectGuid leaderGuid = leader->GetObjectGuid();
+    if (!lastLeaderHeadingAt || lastLeaderHeadingGuid != leaderGuid || lastLeaderHeadingMap != leader->GetMapId())
+    {
+        lastLeaderHeadingGuid = leaderGuid;
+        lastLeaderHeadingMap = leader->GetMapId();
+        lastLeaderHeadingAt = now;
+        lastLeaderHeadingX = leader->GetPositionX();
+        lastLeaderHeadingY = leader->GetPositionY();
+        publish();
+        return;
+    }
+
+    if (now < lastLeaderHeadingAt + FRIEND_HEADING_SAMPLE_SECONDS)
+    {
+        publish();
+        return;
+    }
+
+    float dx = leader->GetPositionX() - lastLeaderHeadingX;
+    float dy = leader->GetPositionY() - lastLeaderHeadingY;
+    const float step = std::sqrt(dx * dx + dy * dy);
+
+    lastLeaderHeadingAt = now;
+    lastLeaderHeadingX = leader->GetPositionX();
+    lastLeaderHeadingY = leader->GetPositionY();
+
+    if (situation.inCombat || situation.partyInCombat || situation.hasAttackers || situation.leaderInCombat)
+    {
+        decay(20);
+        return;
+    }
+
+    if (step > FRIEND_HEADING_MAX_STEP)
+    {
+        partyHeadingConfidence = 0;
+        partyHeadingX = 0.0f;
+        partyHeadingY = 0.0f;
+        publish();
+        return;
+    }
+
+    if (step < FRIEND_HEADING_MIN_STEP)
+    {
+        decay(8);
+        return;
+    }
+
+    if (!Normalize2d(dx, dy))
+    {
+        decay(8);
+        return;
+    }
+
+    if (partyHeadingConfidence < FRIEND_HEADING_MIN_CONFIDENCE)
+    {
+        partyHeadingX = dx;
+        partyHeadingY = dy;
+    }
+    else
+    {
+        float mixedX = partyHeadingX * 0.65f + dx * 0.35f;
+        float mixedY = partyHeadingY * 0.65f + dy * 0.35f;
+        if (Normalize2d(mixedX, mixedY))
+        {
+            partyHeadingX = mixedX;
+            partyHeadingY = mixedY;
+        }
+        else
+        {
+            partyHeadingX = dx;
+            partyHeadingY = dy;
+        }
+    }
+
+    partyHeadingConfidence = static_cast<uint8>(std::min<uint32>(100,
+        partyHeadingConfidence + (step >= 8.0f ? 25 : 15)));
+    publish();
+}
+
+bool FriendBotController::IsIdleMovePositionSafe(const FriendSituation& situation, Unit* leader, float x, float y, float z) const
+{
+    if (!ai || !ai->GetBot() || !leader || !ai->GetAiObjectContext())
+        return false;
+
+    Player* bot = ai->GetBot();
+    WorldPosition from(bot);
+    WorldPosition to(bot->GetMapId(), x, y, z);
+    if (!from.canPathTo(to, bot) || !bot->IsWithinLOS(x, y, z + bot->GetCollisionHeight(), true))
+        return false;
+
+    const float leaderDx = leader->GetPositionX() - x;
+    const float leaderDy = leader->GetPositionY() - y;
+    if (std::sqrt(leaderDx * leaderDx + leaderDy * leaderDy) > SoftLeashDistance(situation))
+        return false;
+
+    if (mode == FriendMode::Dungeon)
+        return true;
+
+    AiObjectContext* context = ai->GetAiObjectContext();
+    std::list<ObjectGuid> nearbyNpcs = context->GetValue<std::list<ObjectGuid> >("nearest npcs no los")->Get();
+    for (std::list<ObjectGuid>::const_iterator itr = nearbyNpcs.begin(); itr != nearbyNpcs.end(); ++itr)
+    {
+        Unit* hostile = ai->GetUnit(*itr);
+        if (!IsHostileTarget(ai, hostile))
+            continue;
+
+        const float candidateDx = hostile->GetPositionX() - x;
+        const float candidateDy = hostile->GetPositionY() - y;
+        const float candidateDistance = std::sqrt(candidateDx * candidateDx + candidateDy * candidateDy);
+        if (candidateDistance < FRIEND_IDLE_MOVE_HOSTILE_BUFFER)
+            return false;
+
+        const float currentDistance = sServerFacade.GetDistance2d(bot, hostile);
+        if (currentDistance < sPlayerbotAIConfig.sightDistance &&
+            candidateDistance + 2.0f < currentDistance &&
+            candidateDistance < FRIEND_IDLE_MOVE_HOSTILE_BUFFER + 6.0f)
+            return false;
+    }
+
+    return true;
+}
+
 bool FriendBotController::PreferFreeDamage(const FriendSituation& situation) const
 {
     return GetCombatStyle(situation) == FriendCombatStyle::Dry;
@@ -3902,22 +4096,50 @@ bool FriendBotController::MoveInLeaderOrbit(const FriendSituation& situation, co
         return true;
     }
 
-    const float distance = minDistance + static_cast<float>(urand(0, 1000)) / 1000.0f * (maxDistance - minDistance);
-    const float angle = static_cast<float>(urand(0, 6283)) / 1000.0f;
-    float x = leader->GetPositionX() + std::cos(angle) * distance;
-    float y = leader->GetPositionY() + std::sin(angle) * distance;
+    const bool forwardOrbit = situation.partyHeadingActive && !urgent &&
+        mode != FriendMode::Dungeon && command != FriendCommand::StayClose;
+    const float forwardAngle = forwardOrbit ? std::atan2(situation.partyHeadingY, situation.partyHeadingX) : 0.0f;
+    const float forwardSpread = mode == FriendMode::Solo ? 1.7f : 1.25f;
+    float x = leader->GetPositionX();
+    float y = leader->GetPositionY();
     float z = leader->GetPositionZ();
-    if (!NormalizeFriendMovePosition(x, y, z))
-        return false;
+    bool found = false;
 
-    WorldPosition from(bot);
-    WorldPosition to(bot->GetMapId(), x, y, z);
-    if (!from.canPathTo(to, bot) || !bot->IsWithinLOS(x, y, z + bot->GetCollisionHeight(), true))
+    for (uint8 attempt = 0; attempt < 8; ++attempt)
+    {
+        const float distance = minDistance + static_cast<float>(urand(0, 1000)) / 1000.0f * (maxDistance - minDistance);
+        float angle = static_cast<float>(urand(0, 6283)) / 1000.0f;
+        if (forwardOrbit && attempt < 5)
+        {
+            const float offset = (static_cast<float>(urand(0, 2000)) / 1000.0f - 1.0f) * forwardSpread;
+            angle = forwardAngle + offset;
+        }
+
+        float candidateX = leader->GetPositionX() + std::cos(angle) * distance;
+        float candidateY = leader->GetPositionY() + std::sin(angle) * distance;
+        float candidateZ = leader->GetPositionZ();
+        if (!NormalizeFriendMovePosition(candidateX, candidateY, candidateZ))
+            continue;
+
+        if (!IsIdleMovePositionSafe(situation, leader, candidateX, candidateY, candidateZ))
+            continue;
+
+        x = candidateX;
+        y = candidateY;
+        z = candidateZ;
+        found = true;
+        break;
+    }
+
+    if (!found)
     {
         x = leader->GetPositionX();
         y = leader->GetPositionY();
         z = leader->GetPositionZ();
         if (!NormalizeFriendMovePosition(x, y, z))
+            return false;
+
+        if (!IsIdleMovePositionSafe(situation, leader, x, y, z))
             return false;
     }
 
@@ -4025,6 +4247,8 @@ void FriendBotController::MaybeSayStatus(const FriendSituation& situation)
             out << "none";
         out << "(" << static_cast<uint32>(situation.attackersTargetingMeCount) << ")";
         out << ", leader " << static_cast<uint32>(situation.leaderDistance);
+        if (situation.partyHeadingActive)
+            out << ", heading " << static_cast<uint32>(situation.partyHeadingConfidence) << "%";
         out << ", targetDist " << static_cast<uint32>(situation.targetDistance);
         out << ", calm " << situation.calmDowntimeSeconds << "s";
         out << ", " << BalanceName(situation.balance);
