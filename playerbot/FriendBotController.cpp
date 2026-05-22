@@ -26,7 +26,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v20";
+    const char* FRIEND_BOT_VERSION = "v21";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -1830,37 +1830,31 @@ bool FriendBotController::TryDirectSellItems(Creature* npc, const std::string& q
     if (items.empty())
         return false;
 
-    items.sort([](Item* left, Item* right)
-    {
-        uint32 leftPrice = left && left->GetProto() ? left->GetProto()->SellPrice * left->GetCount() : 0;
-        uint32 rightPrice = right && right->GetProto() ? right->GetProto()->SellPrice * right->GetCount() : 0;
-        return leftPrice < rightPrice;
-    });
-
     uint32 soldItems = 0;
+    uint32 soldMoney = 0;
     for (Item* item : items)
     {
         if (!item || !item->GetProto() || !item->GetProto()->SellPrice)
             continue;
 
-        ObjectGuid itemGuid = item->GetObjectGuid();
-        uint32 count = item->GetCount();
         std::string itemName = item->GetProto()->Name1;
         uint32 itemId = item->GetProto()->ItemId;
-        uint32 moneyBefore = bot->GetMoney();
+        uint32 count = item->GetCount();
+        uint32 bag = item->GetBagSlot();
+        uint32 slot = item->GetSlot();
+        uint32 value = item->GetProto()->SellPrice * count;
 
-        WorldPacket packet;
-        packet << npc->GetObjectGuid() << itemGuid << count;
-        bot->GetSession()->HandleSellItemOpcode(packet);
-        if (ai->HasCheat(BotCheatMask::gold))
-            bot->SetMoney(moneyBefore);
+        bot->DestroyItem(bag, slot, true);
+        bot->ModifyMoney(static_cast<int32>(value));
 
-        if (bot->GetMoney() > moneyBefore || !bot->GetItemByGuid(itemGuid))
-        {
-            ++soldItems;
-            sPlayerbotAIConfig.logEvent(ai, "FriendSellAction", itemName, std::to_string(itemId));
-        }
+        soldItems += count;
+        soldMoney += value;
+        sPlayerbotAIConfig.logEvent(ai, "FriendSellAction", itemName, std::to_string(itemId));
     }
+
+    if (soldItems > 0)
+        SetResult(lastIntent, "direct sell:" + qualifier + ":" + std::to_string(soldItems) + " items:" +
+            ChatHelper::formatMoney(soldMoney), FriendExecutionResult::Done);
 
     return soldItems > 0;
 }
