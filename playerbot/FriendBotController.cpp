@@ -30,7 +30,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v44";
+    const char* FRIEND_BOT_VERSION = "v45";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -322,6 +322,21 @@ namespace
         }
 
         return result;
+    }
+
+    uint32 CountItemId(Player* bot, uint32 itemId)
+    {
+        if (!bot || !itemId)
+            return 0;
+
+        uint32 count = 0;
+        for (Item* item : FriendBagItems(bot))
+        {
+            if (item && item->GetProto() && item->GetProto()->ItemId == itemId)
+                count += item->GetCount();
+        }
+
+        return count;
     }
 
     bool ShouldFriendSellItem(PlayerbotAI* ai, Item* item, bool aggressive)
@@ -2047,6 +2062,12 @@ FriendExecutionResult FriendBotController::TryServiceAction(const std::string& n
 
         SetResult(lastIntent, displayName, result);
     }
+    else if (name == "buy" && param == "vendor")
+    {
+        result = TryDirectBuySupplies(npc, lastSituation) ? FriendExecutionResult::Done : FriendExecutionResult::Failed;
+        if (result != FriendExecutionResult::Done)
+            SetResult(lastIntent, "direct buy blocked", result);
+    }
     else if (param.empty())
         result = TryAction(name, "rpg action");
     else
@@ -2138,6 +2159,124 @@ bool FriendBotController::TryDirectSellItems(Creature* npc, const std::string& q
         ClearFriendInventoryValues(ai);
 
     return soldItems > 0;
+}
+
+bool FriendBotController::TryDirectBuySupplies(Creature* npc, const FriendSituation& situation)
+{
+    if (!ai || !ai->GetBot() || !npc)
+        return false;
+
+    Player* bot = ai->GetBot();
+    if (!bot->GetNPCIfCanInteractWith(npc->GetObjectGuid(), FriendVendorNpcFlags()))
+        return false;
+
+    struct SupplyChoice
+    {
+        VendorItemData const* items;
+        uint32 slot;
+        ItemPrototype const* proto;
+        uint32 price;
+        int32 score;
+    };
+
+    auto chooseSupply = [&](bool water, SupplyChoice& best) -> bool
+    {
+        best = { nullptr, 0, nullptr, 0, 0 };
+
+        auto scan = [&](VendorItemData const* items)
+        {
+            if (!items)
+                return;
+
+            for (uint32 slot = 0; slot < items->GetItemCount(); ++slot)
+            {
+                VendorItem* vendorItem = items->GetItem(slot);
+                if (!vendorItem)
+                    continue;
+
+                ItemPrototype const* proto = sObjectMgr.GetItemPrototype(vendorItem->item);
+                if (!proto)
+                    continue;
+
+                const bool matches = water ? ItemUsageValue::IsManaFoodOrDrink(proto) : ItemUsageValue::IsHpFoodOrDrink(proto);
+                if (!matches)
+                    continue;
+
+                if (water && !bot->HasMana())
+                    continue;
+
+                if (proto->RequiredLevel > bot->GetLevel() || bot->CanUseItem(proto) != EQUIP_ERR_OK)
+                    continue;
+
+                const uint32 desired = std::min<uint32>(std::max<uint32>(1, proto->GetMaxStackSize()), water ? 20 : 10);
+                if (CountItemId(bot, proto->ItemId) >= desired)
+                    continue;
+
+                uint32 price = uint32(std::floor(proto->BuyPrice * bot->GetReputationPriceDiscount(npc)));
+                if (price > bot->GetMoney())
+                    continue;
+
+                int32 score = static_cast<int32>(proto->RequiredLevel) * 100 +
+                    static_cast<int32>(proto->ItemLevel);
+                if (water)
+                    score += 1000;
+
+                if (!best.proto || score > best.score)
+                    best = { items, slot, proto, price, score };
+            }
+        };
+
+        scan(npc->GetVendorItems());
+#ifndef MANGOSBOT_ZERO
+        scan(npc->GetVendorTemplateItems());
+#endif
+
+        return best.proto != nullptr;
+    };
+
+    auto buySupply = [&](bool water) -> uint32
+    {
+        SupplyChoice choice;
+        if (!chooseSupply(water, choice))
+            return 0;
+
+        const uint32 desired = std::min<uint32>(std::max<uint32>(1, choice.proto->GetMaxStackSize()), water ? 20 : 10);
+        uint32 current = CountItemId(bot, choice.proto->ItemId);
+        uint32 bought = 0;
+
+        while (current < desired && bought < desired && bot->GetMoney() >= choice.price)
+        {
+            const uint32 before = CountItemId(bot, choice.proto->ItemId);
+#ifdef MANGOSBOT_TWO
+            bot->BuyItemFromVendorSlot(npc->GetObjectGuid(), choice.slot, choice.proto->ItemId, 1, NULL_BAG, NULL_SLOT);
+#else
+            bot->BuyItemFromVendor(npc->GetObjectGuid(), choice.proto->ItemId, 1, NULL_BAG, NULL_SLOT);
+#endif
+            current = CountItemId(bot, choice.proto->ItemId);
+            if (current <= before)
+                break;
+
+            ++bought;
+        }
+
+        if (bought)
+        {
+            std::string itemName = choice.proto->Name1 ? choice.proto->Name1 : "";
+            SetResult(lastIntent, std::string("direct buy:") + (water ? "water:" : "food:") +
+                std::to_string(bought) + ":" + itemName, FriendExecutionResult::Done);
+            ClearFriendInventoryValues(ai);
+        }
+
+        return bought;
+    };
+
+    uint32 bought = 0;
+    if (situation.lowWater)
+        bought += buySupply(true);
+    if (situation.lowFood)
+        bought += buySupply(false);
+
+    return bought > 0;
 }
 
 void FriendBotController::ClearFriendTravelTarget()
