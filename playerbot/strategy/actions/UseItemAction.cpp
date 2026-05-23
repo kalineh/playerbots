@@ -14,6 +14,18 @@ using namespace ai;
 
 constexpr std::string_view LOS_GOS_PARAM = "los gos";
 
+static std::string MissingUseTargetMessage(const std::string& useName)
+{
+    if (useName == "drink" || useName == "water" ||
+        useName == "conjured drink" || useName == "conjured water")
+        return "No water to drink";
+
+    if (useName == "food" || useName == "conjured food")
+        return "No food to eat";
+
+    return "No items or game objects available";
+}
+
 SpellCastResult BotUseItemSpell::ForceSpellStart(SpellCastTargets const* targets, Aura* triggeredByAura)
 {
     WorldObject* truecaster = GetTrueCaster();
@@ -352,7 +364,7 @@ bool UseAction::Execute(Event& event)
         }
     }
 
-    ai->TellPlayerNoFacing(requester, "No items or game objects available");
+    ai->TellPlayerNoFacing(requester, MissingUseTargetMessage(useName));
     return false;
 }
 

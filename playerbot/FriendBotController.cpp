@@ -30,7 +30,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v54";
+    const char* FRIEND_BOT_VERSION = "v55";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -220,6 +220,12 @@ namespace
     bool IsFriendlyTarget(PlayerbotAI* ai, Unit* unit)
     {
         return IsUsableUnit(ai, unit) && sServerFacade.IsFriendlyTo(ai->GetBot(), unit);
+    }
+
+    bool IsAvailableFriendPartyMember(Player* member)
+    {
+        return member && member->IsInWorld() && member->IsAlive() && !member->IsBeingTeleported() &&
+            (member->GetSession() || member->GetPlayerbotAI());
     }
 
     uint8 HealthPercent(PlayerbotAI* ai, Unit* unit)
@@ -1376,7 +1382,7 @@ FriendSituation FriendBotController::BuildSituation()
 
     auto visitMember = [&](Player* member)
     {
-        if (!member || !ai->IsSafe(member) || !member->IsAlive())
+        if (!IsAvailableFriendPartyMember(member) || !ai->IsSafe(member))
             return;
 
         if (sServerFacade.GetDistance2d(bot, member) <= sPlayerbotAIConfig.sightDistance)
@@ -3077,7 +3083,7 @@ std::vector<Unit*> FriendBotController::GetPartyTargets() const
     Player* bot = ai->GetBot();
     auto addTarget = [&](Player* member)
     {
-        if (!member || !member->IsAlive() || !ai->IsSafe(member))
+        if (!IsAvailableFriendPartyMember(member) || !ai->IsSafe(member))
             return;
 
         if (std::find(targets.begin(), targets.end(), member) == targets.end())
@@ -3402,19 +3408,24 @@ bool FriendBotController::TryImproveRangedCombatSpacing(const FriendSituation& s
 
     if (IsMovingForAction(ai, lastAction, action))
     {
-        SetResult(lastIntent, action, FriendExecutionResult::Done);
-        ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
-        return true;
+        return false;
     }
 
     float x = 0.0f;
     float y = 0.0f;
     float z = 0.0f;
     if (!FindRangedCombatPosition(target, situation, x, y, z))
+    {
+        SetResult(lastIntent, action + ":no safe spot", FriendExecutionResult::BlockedNotPossible);
         return false;
+    }
 
+    ClearFriendMovement(false);
     if (!MoveFriendPoint(x, y, z))
+    {
+        SetResult(lastIntent, action + ":move failed", FriendExecutionResult::Failed);
         return false;
+    }
 
     SetResult(lastIntent, action, FriendExecutionResult::Done);
     ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
@@ -3457,26 +3468,31 @@ bool FriendBotController::FindRangedCombatPosition(Unit* target, const FriendSit
     const float offsets[] = { 0.0f, 0.45f, -0.45f, 0.9f, -0.9f, 1.35f, -1.35f };
     const float radii[] = { desiredDistance, desiredDistance + 2.0f, std::max(FRIEND_RANGED_SPACING_MIN, desiredDistance - 2.0f) };
 
-    for (float radius : radii)
+    for (uint8 pass = 0; pass < 2; ++pass)
     {
-        for (float offset : offsets)
+        const bool avoidPartyStacking = pass == 0;
+        for (float radius : radii)
         {
-            const float angle = baseAngle + offset + randomOffset;
-            x = target->GetPositionX() + std::cos(angle) * radius;
-            y = target->GetPositionY() + std::sin(angle) * radius;
-            z = target->GetPositionZ();
-            if (!NormalizeFriendMovePosition(x, y, z))
-                continue;
+            for (float offset : offsets)
+            {
+                const float angle = baseAngle + offset + randomOffset;
+                x = target->GetPositionX() + std::cos(angle) * radius;
+                y = target->GetPositionY() + std::sin(angle) * radius;
+                z = target->GetPositionZ();
+                if (!NormalizeFriendMovePosition(x, y, z))
+                    continue;
 
-            if (IsRangedCombatPositionSafe(target, situation, x, y, z))
-                return true;
+                if (IsRangedCombatPositionSafe(target, situation, x, y, z, avoidPartyStacking))
+                    return true;
+            }
         }
     }
 
     return false;
 }
 
-bool FriendBotController::IsRangedCombatPositionSafe(Unit* target, const FriendSituation& situation, float x, float y, float z) const
+bool FriendBotController::IsRangedCombatPositionSafe(Unit* target, const FriendSituation& situation, float x, float y, float z,
+    bool avoidPartyStacking) const
 {
     if (!ai || !ai->GetBot() || !ai->GetAiObjectContext() || !target)
         return false;
@@ -3521,19 +3537,22 @@ bool FriendBotController::IsRangedCombatPositionSafe(Unit* target, const FriendS
             return false;
     }
 
-    if (Group* group = bot->GetGroup())
+    if (avoidPartyStacking)
     {
-        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        if (Group* group = bot->GetGroup())
         {
-            Player* member = ref->getSource();
-            if (!member || member == bot || !member->IsAlive() || member->GetMapId() != target->GetMapId() ||
-                !ai->IsSafe(member))
-                continue;
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            {
+                Player* member = ref->getSource();
+                if (!IsAvailableFriendPartyMember(member) || member == bot ||
+                    member->GetMapId() != target->GetMapId() || !ai->IsSafe(member))
+                    continue;
 
-            const float dx = member->GetPositionX() - x;
-            const float dy = member->GetPositionY() - y;
-            if (std::sqrt(dx * dx + dy * dy) < FRIEND_RANGED_SPACING_PARTY_BUFFER)
-                return false;
+                const float dx = member->GetPositionX() - x;
+                const float dy = member->GetPositionY() - y;
+                if (std::sqrt(dx * dx + dy * dy) < FRIEND_RANGED_SPACING_PARTY_BUFFER)
+                    return false;
+            }
         }
     }
 
@@ -5977,7 +5996,7 @@ std::string FriendBotController::TaskInterruptReason(const FriendSituation& situ
     const uint8 idleHealthFloor = mode == FriendMode::Solo ?
         sPlayerbotAIConfig.mediumHealth : FRIEND_HEAL_TOP_OFF_HEALTH;
     if (situation.botHealth < idleHealthFloor)
-        return "low hp";
+        return "self low hp";
 
     if (mode != FriendMode::Solo && !remoteSoloPartyCombat &&
         situation.lowestPartyHealth < FRIEND_HEAL_TOP_OFF_HEALTH)
