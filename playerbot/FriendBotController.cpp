@@ -30,7 +30,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v51";
+    const char* FRIEND_BOT_VERSION = "v52";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -1166,9 +1166,7 @@ FriendSituation FriendBotController::BuildSituation()
 
     if (context)
     {
-        situation.hasAttackers = GetContextValue<bool>(context, "has attackers", false);
         situation.hasPossibleTargets = GetContextValue<bool>(context, "has possible attack targets", false);
-        situation.attackersCount = GetContextValue<uint8>(context, "attackers count", 0);
         situation.possibleTargetsCount = GetContextValue<uint8>(context, "possible attack targets count", 0);
         situation.balance = GetContextValue<uint8>(context, "balance", 100);
         situation.bagSpace = GetContextValue<uint8>(context, "bag space", 0);
@@ -1194,6 +1192,20 @@ FriendSituation FriendBotController::BuildSituation()
         uint32 gearCost = std::max<uint32>(1000, (bot->GetLevel() * bot->GetLevel() * bot->GetLevel()) / 2);
         situation.shouldUpgradeGear = situation.gearBudget >= gearCost;
 
+        std::set<ObjectGuid> actualAttackers;
+        auto addActualAttacker = [&](Unit* unit)
+        {
+            if (IsHostileTarget(ai, unit))
+                actualAttackers.insert(unit->GetObjectGuid());
+        };
+
+        for (Unit* attacker : bot->getAttackers())
+            addActualAttacker(attacker);
+
+        if (Pet* pet = bot->GetPet())
+            for (Unit* attacker : pet->getAttackers())
+                addActualAttacker(attacker);
+
         float closestAttackerTargetingMeDistance = 0.0f;
         std::list<ObjectGuid> attackersTargetingMe = context->GetValue<std::list<ObjectGuid> >("attackers targeting me")->Get();
         for (std::list<ObjectGuid>::const_iterator itr = attackersTargetingMe.begin(); itr != attackersTargetingMe.end(); ++itr)
@@ -1202,6 +1214,7 @@ FriendSituation FriendBotController::BuildSituation()
             if (!IsHostileTarget(ai, unit))
                 continue;
 
+            addActualAttacker(unit);
             ++situation.attackersTargetingMeCount;
             situation.botHasThreat = true;
 
@@ -1212,6 +1225,8 @@ FriendSituation FriendBotController::BuildSituation()
                 closestAttackerTargetingMeDistance = distance;
             }
         }
+        situation.attackersCount = static_cast<uint8>(std::min<size_t>(actualAttackers.size(), 255));
+        situation.hasAttackers = situation.attackersCount > 0;
 
         LootObjectStack* availableLoot = GetContextValue<LootObjectStack*>(context, "available loot", nullptr);
         if (availableLoot)
