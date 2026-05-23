@@ -30,7 +30,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v47";
+    const char* FRIEND_BOT_VERSION = "v48";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -250,6 +250,43 @@ namespace
     bool Contains(const std::string& value, const std::string& needle)
     {
         return value.find(needle) != std::string::npos;
+    }
+
+    std::string LowerCopy(const std::string& value)
+    {
+        std::string result = value;
+        std::transform(result.begin(), result.end(), result.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return result;
+    }
+
+    bool IsFriendSupplyItem(ItemPrototype const* proto, bool water)
+    {
+        if (!proto || proto->Class != ItemClass::ITEM_CLASS_CONSUMABLE ||
+            (proto->SubClass != ItemSubclassConsumable::ITEM_SUBCLASS_CONSUMABLE &&
+             proto->SubClass != ItemSubclassConsumable::ITEM_SUBCLASS_FOOD &&
+             proto->SubClass != ItemSubclassConsumable::ITEM_SUBCLASS_CONSUMABLE_OTHER))
+        {
+            return false;
+        }
+
+        if (water && ItemUsageValue::IsManaFoodOrDrink(proto))
+            return true;
+        if (!water && ItemUsageValue::IsHpFoodOrDrink(proto))
+            return true;
+
+        std::string name = LowerCopy(proto->Name1 ? proto->Name1 : "");
+        if (water)
+        {
+            return Contains(name, "water") ||
+                Contains(name, "juice") ||
+                Contains(name, "milk") ||
+                Contains(name, "nectar") ||
+                Contains(name, "drink") ||
+                Contains(name, "tea");
+        }
+
+        return false;
     }
 
     bool IsSelfOnlyCoreBuffName(const std::string& name)
@@ -2077,10 +2114,21 @@ FriendExecutionResult FriendBotController::TryServiceAction(const std::string& n
     else if (name == "buy" && param == "vendor")
     {
         result = TryDirectBuySupplies(npc, lastSituation) ? FriendExecutionResult::Done : FriendExecutionResult::Failed;
-        if (result != FriendExecutionResult::Done && lastResult == FriendExecutionResult::BlockedNotUseful)
-            result = FriendExecutionResult::BlockedNotUseful;
-        if (result != FriendExecutionResult::Done && lastSituation.lowAmmo && !lastSituation.lowWater && !lastSituation.lowFood)
-            result = TryActionWithParam(name, param, "rpg action");
+        const std::string directBuyAction = lastAction;
+        const FriendExecutionResult directBuyResult = lastResult;
+        if (result != FriendExecutionResult::Done)
+        {
+            FriendExecutionResult legacyResult = TryActionWithParam(name, param, "rpg action");
+            if (legacyResult == FriendExecutionResult::Done)
+                result = legacyResult;
+            else if (StartsWith(directBuyAction, "direct buy blocked"))
+            {
+                SetResult(lastIntent, directBuyAction, directBuyResult);
+                result = directBuyResult;
+            }
+            else
+                result = legacyResult;
+        }
         if (result != FriendExecutionResult::Done && !StartsWith(lastAction, "direct buy blocked"))
             SetResult(lastIntent, "direct buy blocked", result);
     }
@@ -2180,7 +2228,10 @@ bool FriendBotController::TryDirectSellItems(Creature* npc, const std::string& q
 bool FriendBotController::TryDirectBuySupplies(Creature*& npc, const FriendSituation& situation)
 {
     if (!ai || !ai->GetBot() || !ai->GetAiObjectContext() || !npc)
+    {
+        SetResult(lastIntent, "direct buy blocked:no vendor", FriendExecutionResult::BlockedNotUseful);
         return false;
+    }
 
     Player* bot = ai->GetBot();
     std::vector<Creature*> vendors;
@@ -2201,8 +2252,15 @@ bool FriendBotController::TryDirectBuySupplies(Creature*& npc, const FriendSitua
     for (std::list<ObjectGuid>::const_iterator itr = nearbyNpcs.begin(); itr != nearbyNpcs.end(); ++itr)
         addVendor(bot->GetNPCIfCanInteractWith(*itr, FriendVendorNpcFlags()));
 
+    std::list<ObjectGuid> nearbyNpcsNoLos = ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid> >("nearest npcs no los")->Get();
+    for (std::list<ObjectGuid>::const_iterator itr = nearbyNpcsNoLos.begin(); itr != nearbyNpcsNoLos.end(); ++itr)
+        addVendor(bot->GetNPCIfCanInteractWith(*itr, FriendVendorNpcFlags()));
+
     if (vendors.empty())
+    {
+        SetResult(lastIntent, "direct buy blocked:no vendor", FriendExecutionResult::BlockedNotUseful);
         return false;
+    }
 
     struct SupplyChoice
     {
@@ -2214,7 +2272,17 @@ bool FriendBotController::TryDirectBuySupplies(Creature*& npc, const FriendSitua
         int32 score;
     };
 
-    auto chooseSupply = [&](bool water, SupplyChoice& best) -> bool
+    struct SupplyScanStats
+    {
+        uint32 matches = 0;
+        uint32 tooHighLevel = 0;
+        uint32 unusable = 0;
+        uint32 alreadyStocked = 0;
+        uint32 unaffordable = 0;
+        uint32 buyFailed = 0;
+    };
+
+    auto chooseSupply = [&](bool water, SupplyChoice& best, SupplyScanStats& stats) -> bool
     {
         best = SupplyChoice{ nullptr, nullptr, 0, nullptr, 0, 0 };
 
@@ -2233,23 +2301,39 @@ bool FriendBotController::TryDirectBuySupplies(Creature*& npc, const FriendSitua
                 if (!proto)
                     continue;
 
-                const bool matches = water ? ItemUsageValue::IsManaFoodOrDrink(proto) : ItemUsageValue::IsHpFoodOrDrink(proto);
-                if (!matches)
+                if (!IsFriendSupplyItem(proto, water))
                     continue;
+
+                ++stats.matches;
 
                 if (water && !bot->HasMana())
                     continue;
 
-                if (proto->RequiredLevel > bot->GetLevel() || bot->CanUseItem(proto) != EQUIP_ERR_OK)
+                if (proto->RequiredLevel > bot->GetLevel())
+                {
+                    ++stats.tooHighLevel;
                     continue;
+                }
+
+                if (bot->CanUseItem(proto) != EQUIP_ERR_OK)
+                {
+                    ++stats.unusable;
+                    continue;
+                }
 
                 const uint32 desired = std::min<uint32>(std::max<uint32>(1, proto->GetMaxStackSize()), water ? 20 : 10);
                 if (CountItemId(bot, proto->ItemId) >= desired)
+                {
+                    ++stats.alreadyStocked;
                     continue;
+                }
 
                 uint32 price = uint32(std::floor(proto->BuyPrice * bot->GetReputationPriceDiscount(vendor)));
                 if (price > bot->GetMoney())
+                {
+                    ++stats.unaffordable;
                     continue;
+                }
 
                 int32 score = static_cast<int32>(proto->RequiredLevel) * 100 +
                     static_cast<int32>(proto->ItemLevel);
@@ -2272,10 +2356,14 @@ bool FriendBotController::TryDirectBuySupplies(Creature*& npc, const FriendSitua
         return best.proto != nullptr;
     };
 
+    SupplyScanStats waterStats;
+    SupplyScanStats foodStats;
+
     auto buySupply = [&](bool water) -> uint32
     {
         SupplyChoice choice;
-        if (!chooseSupply(water, choice))
+        SupplyScanStats& stats = water ? waterStats : foodStats;
+        if (!chooseSupply(water, choice, stats))
             return 0;
 
         const uint32 desired = std::min<uint32>(std::max<uint32>(1, choice.proto->GetMaxStackSize()), water ? 20 : 10);
@@ -2294,7 +2382,10 @@ bool FriendBotController::TryDirectBuySupplies(Creature*& npc, const FriendSitua
 #endif
             current = CountItemId(bot, choice.proto->ItemId);
             if (current <= before)
+            {
+                ++stats.buyFailed;
                 break;
+            }
 
             ++bought;
         }
@@ -2319,11 +2410,29 @@ bool FriendBotController::TryDirectBuySupplies(Creature*& npc, const FriendSitua
 
     if (!bought)
     {
+        auto supplyBlockReason = [](bool water, const SupplyScanStats& stats) -> std::string
+        {
+            const std::string kind = water ? "water" : "food";
+            if (!stats.matches)
+                return "no " + kind + " vendor";
+            if (stats.buyFailed)
+                return kind + " buy failed";
+            if (stats.unaffordable)
+                return "can't afford " + kind;
+            if (stats.tooHighLevel)
+                return kind + " too high level";
+            if (stats.unusable)
+                return "unusable " + kind;
+            if (stats.alreadyStocked)
+                return kind + " already stocked";
+            return "no usable " + kind;
+        };
+
         std::string reason = "direct buy blocked:";
         if (situation.lowWater)
-            reason += "no water vendor";
+            reason += supplyBlockReason(true, waterStats);
         else if (situation.lowFood)
-            reason += "no food vendor";
+            reason += supplyBlockReason(false, foodStats);
         else
             reason += "no supply need";
         SetResult(lastIntent, reason, FriendExecutionResult::BlockedNotUseful);
