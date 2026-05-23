@@ -30,7 +30,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v57";
+    const char* FRIEND_BOT_VERSION = "v58";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -388,8 +388,27 @@ namespace
             !item->GetProto() || !item->GetProto()->SellPrice)
             return false;
 
+        static const uint32 HEARTHSTONE_ITEM_ID = 6948;
+        if (item->GetProto()->ItemId == HEARTHSTONE_ITEM_ID)
+            return false;
+
         AiObjectContext* context = ai->GetAiObjectContext();
         ItemUsage usage = AI_VALUE2_LAZY(ItemUsage, "item usage", ItemQualifier(item).GetQualifier());
+        if (item->IsSoulBound())
+        {
+            switch (usage)
+            {
+                case ItemUsage::ITEM_USAGE_QUEST:
+                case ItemUsage::ITEM_USAGE_USE:
+                case ItemUsage::ITEM_USAGE_KEEP:
+                case ItemUsage::ITEM_USAGE_AMMO:
+                case ItemUsage::ITEM_USAGE_FORCE_NEED:
+                    return false;
+                default:
+                    break;
+            }
+        }
+
         switch (usage)
         {
             case ItemUsage::ITEM_USAGE_NONE:
@@ -406,7 +425,7 @@ namespace
             case ItemUsage::ITEM_USAGE_DISENCHANT:
                 return aggressive;
             default:
-                return false;
+                return item->IsSoulBound() && aggressive;
         }
     }
 
@@ -1954,7 +1973,8 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
             }
             if (ai && ai->GetBot() && ai->GetBot()->getClass() == CLASS_DRUID &&
                 (ShouldConserveDamageMana(situation) || situation.botHasThreat ||
-                 situation.botMana < sPlayerbotAIConfig.mediumMana) &&
+                 situation.botMana < sPlayerbotAIConfig.mediumMana ||
+                 IsLowPressureFight(situation)) &&
                 TryDruidCombatForm(situation, "friend druid form"))
                 return true;
             if (TryCatalogDamage(situation, "friend damage"))
@@ -3378,30 +3398,97 @@ bool FriendBotController::TryDruidCombatForm(const FriendSituation& situation, c
         return false;
 
     Player* bot = ai->GetBot();
-    if (ai->HasAnyAuraOf(bot, "cat form", "bear form", "dire bear form", NULL))
-        return false;
+    const bool inCat = ai->HasAura("cat form", bot);
+    const bool inBear = ai->HasAnyAuraOf(bot, "bear form", "dire bear form", NULL);
 
     const bool selfHot = ai->HasAnyAuraOf(bot, "regrowth", "rejuvenation", NULL);
     const bool selfHotReady = selfHot && situation.botHealth < sPlayerbotAIConfig.almostFullHealth &&
         situation.lowestPartyHealth >= sPlayerbotAIConfig.mediumHealth;
-    if (situation.healerish && situation.damagedPartyMembers > 0 &&
-        !situation.botHasThreat && !selfHotReady)
+    const bool partyNeedsHealing = situation.lowestPartyHealth < FRIEND_HEAL_TOP_OFF_HEALTH ||
+        situation.lowestPartyHealthDelta <= FRIEND_HEALTH_DROP_NOTICE ||
+        (situation.healerish && situation.damagedPartyMembers > 0);
+    if (situation.healerish && partyNeedsHealing && !situation.botHasThreat && !selfHotReady)
         return false;
 
-    if (situation.tankish || situation.hasAttackers || situation.botHasThreat ||
-        situation.botHealth < sPlayerbotAIConfig.almostFullHealth ||
-        situation.botHealthDelta <= FRIEND_HEALTH_DROP_NOTICE)
+    bool sturdierPartyNearby = false;
+    if (Group* group = bot->GetGroup())
+    {
+        const uint32 botMaxHealth = bot->GetMaxHealth();
+        const uint32 botHealth = bot->GetHealth();
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->getSource();
+            if (!IsAvailableFriendPartyMember(member) || member == bot || !ai->IsSafe(member) ||
+                member->GetMapId() != bot->GetMapId() ||
+                sServerFacade.GetDistance2d(bot, member) > sPlayerbotAIConfig.sightDistance)
+            {
+                continue;
+            }
+
+            const uint32 memberMaxHealth = member->GetMaxHealth();
+            const uint32 memberHealth = member->GetHealth();
+            if ((botMaxHealth && memberMaxHealth &&
+                 static_cast<uint64>(memberMaxHealth) * 100 >= static_cast<uint64>(botMaxHealth) * 115) ||
+                (botHealth && memberHealth &&
+                 static_cast<uint64>(memberHealth) * 100 >= static_cast<uint64>(botHealth) * 115))
+            {
+                sturdierPartyNearby = true;
+                break;
+            }
+        }
+    }
+
+    const bool highDanger = situation.tankish ||
+        situation.hasAttackers ||
+        situation.botHasThreat ||
+        situation.attackersCount > 1 ||
+        situation.targetIsElite ||
+        situation.balance < 80 ||
+        situation.botHealth < sPlayerbotAIConfig.mediumHealth ||
+        situation.botHealthDelta <= FRIEND_HEALTH_DROP_DANGER ||
+        (situation.possibleTargetsCount > 1 && situation.lowestPartyHealth < FRIEND_HEAL_TOP_OFF_HEALTH);
+    const bool bearUseful = highDanger ||
+        (situation.botHealth < sPlayerbotAIConfig.almostFullHealth &&
+         situation.botHealthDelta <= FRIEND_HEALTH_DROP_NOTICE);
+
+    const uint32 personality = bot->GetObjectGuid().GetCounter();
+    const bool catMood = ((personality + static_cast<uint32>(time(nullptr) / 45)) % 4) == 0;
+    const bool catUseful = !bearUseful &&
+        !partyNeedsHealing &&
+        IsLowPressureFight(situation) &&
+        (ShouldConserveDamageMana(situation) ||
+         situation.botMana < FRIEND_MANA_DAMAGE_CONSERVE ||
+         sturdierPartyNearby ||
+         catMood);
+
+    if (inCat)
+    {
+        if (!bearUseful)
+            return false;
+
+        if (TryAction("dire bear form", source) == FriendExecutionResult::Done)
+            return true;
+        return TryAction("bear form", source) == FriendExecutionResult::Done;
+    }
+
+    if (inBear)
+    {
+        if (catUseful)
+            return TryAction("cat form", source) == FriendExecutionResult::Done;
+        return false;
+    }
+
+    if (bearUseful)
     {
         if (TryAction("dire bear form", source) == FriendExecutionResult::Done)
             return true;
         return TryAction("bear form", source) == FriendExecutionResult::Done;
     }
 
-    if (TryAction("cat form", source) == FriendExecutionResult::Done)
+    if (catUseful && TryAction("cat form", source) == FriendExecutionResult::Done)
         return true;
-    if (TryAction("dire bear form", source) == FriendExecutionResult::Done)
-        return true;
-    return TryAction("bear form", source) == FriendExecutionResult::Done;
+
+    return false;
 }
 
 bool FriendBotController::TryImproveRangedCombatSpacing(const FriendSituation& situation, const std::string& action)
@@ -3689,7 +3776,8 @@ bool FriendBotController::PrefersMeleeDamage(const FriendSituation& situation) c
         case CLASS_PALADIN:
             return true;
         case CLASS_DRUID:
-            return ShouldConserveDamageMana(situation) || !situation.ranged || situation.tankish;
+            return ai->HasAnyAuraOf(ai->GetBot(), "cat form", "bear form", "dire bear form", NULL) ||
+                ShouldConserveDamageMana(situation) || !situation.ranged || situation.tankish;
         case CLASS_SHAMAN:
             return !situation.ranged || situation.tankish;
 #ifdef MANGOSBOT_TWO
