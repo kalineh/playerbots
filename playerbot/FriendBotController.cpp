@@ -30,7 +30,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v46";
+    const char* FRIEND_BOT_VERSION = "v47";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -59,7 +59,7 @@ namespace
     const uint32 FRIEND_EQUIP_UPGRADE_CHECK_COOLDOWN = 2 * MINUTE;
     const uint32 FRIEND_PROPOSAL_COOLDOWN = 5 * MINUTE;
     const uint32 FRIEND_PROPOSAL_REJECT_COOLDOWN = 10 * MINUTE;
-    const uint32 FRIEND_RESUPPLY_RETRY_COOLDOWN = 0;
+    const uint32 FRIEND_RESUPPLY_RETRY_COOLDOWN = 30;
     const uint32 FRIEND_HEADING_SAMPLE_SECONDS = 3;
     const float FRIEND_HEADING_MIN_STEP = 2.5f;
     const float FRIEND_HEADING_MAX_STEP = 70.0f;
@@ -2077,7 +2077,11 @@ FriendExecutionResult FriendBotController::TryServiceAction(const std::string& n
     else if (name == "buy" && param == "vendor")
     {
         result = TryDirectBuySupplies(npc, lastSituation) ? FriendExecutionResult::Done : FriendExecutionResult::Failed;
-        if (result != FriendExecutionResult::Done)
+        if (result != FriendExecutionResult::Done && lastResult == FriendExecutionResult::BlockedNotUseful)
+            result = FriendExecutionResult::BlockedNotUseful;
+        if (result != FriendExecutionResult::Done && lastSituation.lowAmmo && !lastSituation.lowWater && !lastSituation.lowFood)
+            result = TryActionWithParam(name, param, "rpg action");
+        if (result != FriendExecutionResult::Done && !StartsWith(lastAction, "direct buy blocked"))
             SetResult(lastIntent, "direct buy blocked", result);
     }
     else if (param.empty())
@@ -2173,17 +2177,36 @@ bool FriendBotController::TryDirectSellItems(Creature* npc, const std::string& q
     return soldItems > 0;
 }
 
-bool FriendBotController::TryDirectBuySupplies(Creature* npc, const FriendSituation& situation)
+bool FriendBotController::TryDirectBuySupplies(Creature*& npc, const FriendSituation& situation)
 {
-    if (!ai || !ai->GetBot() || !npc)
+    if (!ai || !ai->GetBot() || !ai->GetAiObjectContext() || !npc)
         return false;
 
     Player* bot = ai->GetBot();
-    if (!bot->GetNPCIfCanInteractWith(npc->GetObjectGuid(), FriendVendorNpcFlags()))
+    std::vector<Creature*> vendors;
+    auto addVendor = [&](Creature* vendor)
+    {
+        if (!vendor || !bot->GetNPCIfCanInteractWith(vendor->GetObjectGuid(), FriendVendorNpcFlags()))
+            return;
+
+        for (Creature* existing : vendors)
+            if (existing && existing->GetObjectGuid() == vendor->GetObjectGuid())
+                return;
+
+        vendors.push_back(vendor);
+    };
+
+    addVendor(npc);
+    std::list<ObjectGuid> nearbyNpcs = ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid> >("nearest npcs")->Get();
+    for (std::list<ObjectGuid>::const_iterator itr = nearbyNpcs.begin(); itr != nearbyNpcs.end(); ++itr)
+        addVendor(bot->GetNPCIfCanInteractWith(*itr, FriendVendorNpcFlags()));
+
+    if (vendors.empty())
         return false;
 
     struct SupplyChoice
     {
+        Creature* npc;
         VendorItemData const* items;
         uint32 slot;
         ItemPrototype const* proto;
@@ -2193,11 +2216,11 @@ bool FriendBotController::TryDirectBuySupplies(Creature* npc, const FriendSituat
 
     auto chooseSupply = [&](bool water, SupplyChoice& best) -> bool
     {
-        best = { nullptr, 0, nullptr, 0, 0 };
+        best = SupplyChoice{ nullptr, nullptr, 0, nullptr, 0, 0 };
 
-        auto scan = [&](VendorItemData const* items)
+        auto scan = [&](Creature* vendor, VendorItemData const* items)
         {
-            if (!items)
+            if (!vendor || !items)
                 return;
 
             for (uint32 slot = 0; slot < items->GetItemCount(); ++slot)
@@ -2224,7 +2247,7 @@ bool FriendBotController::TryDirectBuySupplies(Creature* npc, const FriendSituat
                 if (CountItemId(bot, proto->ItemId) >= desired)
                     continue;
 
-                uint32 price = uint32(std::floor(proto->BuyPrice * bot->GetReputationPriceDiscount(npc)));
+                uint32 price = uint32(std::floor(proto->BuyPrice * bot->GetReputationPriceDiscount(vendor)));
                 if (price > bot->GetMoney())
                     continue;
 
@@ -2234,14 +2257,17 @@ bool FriendBotController::TryDirectBuySupplies(Creature* npc, const FriendSituat
                     score += 1000;
 
                 if (!best.proto || score > best.score)
-                    best = { items, slot, proto, price, score };
+                    best = SupplyChoice{ vendor, items, slot, proto, price, score };
             }
         };
 
-        scan(npc->GetVendorItems());
+        for (Creature* vendor : vendors)
+        {
+            scan(vendor, vendor->GetVendorItems());
 #ifndef MANGOSBOT_ZERO
-        scan(npc->GetVendorTemplateItems());
+            scan(vendor, vendor->GetVendorTemplateItems());
 #endif
+        }
 
         return best.proto != nullptr;
     };
@@ -2259,10 +2285,12 @@ bool FriendBotController::TryDirectBuySupplies(Creature* npc, const FriendSituat
         while (current < desired && bought < desired && bot->GetMoney() >= choice.price)
         {
             const uint32 before = CountItemId(bot, choice.proto->ItemId);
+            bot->SetSelectionGuid(choice.npc->GetObjectGuid());
+            sServerFacade.SetFacingTo(bot, choice.npc);
 #ifdef MANGOSBOT_TWO
-            bot->BuyItemFromVendorSlot(npc->GetObjectGuid(), choice.slot, choice.proto->ItemId, 1, NULL_BAG, NULL_SLOT);
+            bot->BuyItemFromVendorSlot(choice.npc->GetObjectGuid(), choice.slot, choice.proto->ItemId, 1, NULL_BAG, NULL_SLOT);
 #else
-            bot->BuyItemFromVendor(npc->GetObjectGuid(), choice.proto->ItemId, 1, NULL_BAG, NULL_SLOT);
+            bot->BuyItemFromVendor(choice.npc->GetObjectGuid(), choice.proto->ItemId, 1, NULL_BAG, NULL_SLOT);
 #endif
             current = CountItemId(bot, choice.proto->ItemId);
             if (current <= before)
@@ -2277,6 +2305,7 @@ bool FriendBotController::TryDirectBuySupplies(Creature* npc, const FriendSituat
             SetResult(lastIntent, std::string("direct buy:") + (water ? "water:" : "food:") +
                 std::to_string(bought) + ":" + itemName, FriendExecutionResult::Done);
             ClearFriendInventoryValues(ai);
+            npc = choice.npc;
         }
 
         return bought;
@@ -2287,6 +2316,18 @@ bool FriendBotController::TryDirectBuySupplies(Creature* npc, const FriendSituat
         bought += buySupply(true);
     if (situation.lowFood)
         bought += buySupply(false);
+
+    if (!bought)
+    {
+        std::string reason = "direct buy blocked:";
+        if (situation.lowWater)
+            reason += "no water vendor";
+        else if (situation.lowFood)
+            reason += "no food vendor";
+        else
+            reason += "no supply need";
+        SetResult(lastIntent, reason, FriendExecutionResult::BlockedNotUseful);
+    }
 
     return bought > 0;
 }
@@ -4411,19 +4452,20 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
     {
         taskTravelRequested = false;
         taskTravelPurpose = 0;
-        if (command != FriendCommand::Shop)
-            nextResupplyAttemptAt = now + FRIEND_RESUPPLY_RETRY_COOLDOWN;
+        nextResupplyAttemptAt = now + FRIEND_RESUPPLY_RETRY_COOLDOWN;
 
         ClearFriendTravelTarget();
         if (command == FriendCommand::Shop)
         {
             command = FriendCommand::None;
             ClearExecutionState();
+            SetResult(lastIntent, "shop blocked:no service npc", FriendExecutionResult::BlockedNotUseful);
+            ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+            return true;
         }
 
-        SetResult(lastIntent, "shop blocked:no service npc", FriendExecutionResult::BlockedNotUseful);
-        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
-        return true;
+        SetResult(lastIntent, "resupply deferred:no service npc", FriendExecutionResult::BlockedNotUseful);
+        return false;
     }
 
     if (situation.nearbyRepair && situation.shouldRepair &&
@@ -4469,24 +4511,27 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
 
     if (serviceTravelTarget && expectedServiceNearby && NeedsTownChores(situation))
     {
+        const bool directBuyBlocked = StartsWith(lastAction, "direct buy blocked");
+        const std::string blockedReason = directBuyBlocked ? lastAction : std::string("service action failed");
+
         taskTravelRequested = false;
         taskTravelPurpose = 0;
-        if (command != FriendCommand::Shop)
-            nextResupplyAttemptAt = now + FRIEND_RESUPPLY_RETRY_COOLDOWN;
+        nextResupplyAttemptAt = now + FRIEND_RESUPPLY_RETRY_COOLDOWN;
 
         ClearFriendTravelTarget();
         if (command == FriendCommand::Shop)
         {
             command = FriendCommand::None;
             ClearExecutionState();
-            SetResult(lastIntent, "shop blocked:service action failed", FriendExecutionResult::BlockedNotUseful);
+            SetResult(lastIntent, "shop blocked:" + blockedReason, FriendExecutionResult::BlockedNotUseful);
+            ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+            return true;
         }
         else
         {
-            SetResult(lastIntent, "resupply deferred:service action failed", FriendExecutionResult::BlockedNotUseful);
+            SetResult(lastIntent, "resupply deferred:" + blockedReason, FriendExecutionResult::BlockedNotUseful);
         }
-        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
-        return true;
+        return false;
     }
 
     if (serviceTravelTarget && expectedServiceNearby && !NeedsTownChores(situation))
@@ -4516,12 +4561,16 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
         const bool blocked = NeedsTownChores(situation);
         if (blocked)
         {
+            const bool directBuyBlocked = StartsWith(lastAction, "direct buy blocked");
+
             taskTravelRequested = false;
             taskTravelPurpose = 0;
+            nextResupplyAttemptAt = now + FRIEND_RESUPPLY_RETRY_COOLDOWN;
             ClearFriendTravelTarget();
             command = FriendCommand::None;
             ClearExecutionState();
-            SetResult(lastIntent, "shop blocked", FriendExecutionResult::BlockedNotUseful);
+            SetResult(lastIntent, directBuyBlocked ? "shop blocked:" + lastAction : "shop blocked",
+                FriendExecutionResult::BlockedNotUseful);
             ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
             return true;
         }
@@ -4539,7 +4588,8 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
     if (NeedsTownChores(situation))
     {
         nextResupplyAttemptAt = now + FRIEND_RESUPPLY_RETRY_COOLDOWN;
-        SetResult(lastIntent, "resupply deferred", FriendExecutionResult::BlockedNotUseful);
+        SetResult(lastIntent, StartsWith(lastAction, "direct buy blocked") ?
+            "resupply deferred:" + lastAction : "resupply deferred", FriendExecutionResult::BlockedNotUseful);
     }
 
     return false;
