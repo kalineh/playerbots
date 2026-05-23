@@ -14,6 +14,7 @@
 #include "strategy/values/BudgetValues.h"
 #include "strategy/values/ItemUsageValue.h"
 #include "strategy/values/LootValues.h"
+#include "strategy/values/AttackersValue.h"
 #include "strategy/values/PossibleAttackTargetsValue.h"
 #include "strategy/values/ThreatValues.h"
 #include "strategy/values/TravelValues.h"
@@ -29,7 +30,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v43";
+    const char* FRIEND_BOT_VERSION = "v44";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -1044,6 +1045,8 @@ std::string FriendBotController::FormatReport() const
     if (lastSituation.partyHeadingActive)
         out << ", heading=" << static_cast<uint32>(lastSituation.partyHeadingConfidence) << "%";
     out << ", targets=" << static_cast<uint32>(lastSituation.possibleTargetsCount);
+    if (lastSituation.nearbyFightTargetsCount)
+        out << ", nearbyFight=" << static_cast<uint32>(lastSituation.nearbyFightTargetsCount);
     AppendTravelSummary(out, lastSituation);
     if (nextResupplyAttemptAt > time(nullptr))
         out << ", resupplyCd=" << static_cast<uint32>(nextResupplyAttemptAt - time(nullptr)) << "s";
@@ -1322,6 +1325,25 @@ FriendSituation FriendBotController::BuildSituation()
             situation.leaderTargetGuid = leaderTarget->GetObjectGuid();
     }
 
+    if (context && mode != FriendMode::Dungeon)
+    {
+        std::list<ObjectGuid> nearbyNpcs = context->GetValue<std::list<ObjectGuid> >("nearest npcs no los")->Get();
+        for (std::list<ObjectGuid>::const_iterator itr = nearbyNpcs.begin(); itr != nearbyNpcs.end(); ++itr)
+        {
+            Unit* unit = ai->GetUnit(*itr);
+            if (!IsValidNearbyFightTarget(unit, situation))
+                continue;
+
+            ++situation.nearbyFightTargetsCount;
+            float distance = sServerFacade.GetDistance2d(bot, unit);
+            if (!situation.nearbyFightTargetGuid || distance < situation.nearbyFightTargetDistance)
+            {
+                situation.nearbyFightTargetGuid = unit->GetObjectGuid();
+                situation.nearbyFightTargetDistance = distance;
+            }
+        }
+    }
+
     UpdatePartyHeading(situation, leader);
 
     const time_t now = time(nullptr);
@@ -1488,19 +1510,24 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
         const int32 grindBias = static_cast<int32>((personality / 13) % 30);
         const int32 forwardBias = (mode != FriendMode::Dungeon && situation.partyHeadingActive) ?
             static_cast<int32>(situation.partyHeadingConfidence) : 0;
+        const bool nearbyFightAvailable = situation.possibleTargetsCount > 0 || situation.nearbyFightTargetsCount > 0;
+        const bool safeNearbyFight = nearbyFightAvailable &&
+            situation.possibleTargetsCount <= 3 &&
+            situation.nearbyFightTargetsCount <= (mode == FriendMode::Solo ? 4 : 3);
         const bool partyComfortable = situation.leaderSafe &&
             situation.leaderDistance <= SoftLeashDistance(situation) &&
             situation.botHealth >= FRIEND_HEAL_TOP_OFF_HEALTH &&
             situation.lowestPartyHealth >= FRIEND_HEAL_TOP_OFF_HEALTH;
+        const bool remoteBuyOnly = situation.shouldBuy && !situation.shouldRepair && !situation.shouldSell &&
+            !townAccessNearby && !resupplyInProgress && command != FriendCommand::Shop;
         const bool urgentTownChores = command == FriendCommand::Shop ||
-            situation.shouldRepair || situation.shouldSell || situation.shouldBuy;
+            situation.shouldRepair || situation.shouldSell;
         const bool safePullOpportunity = command == FriendCommand::None &&
             mode != FriendMode::Dungeon &&
             situation.leaderSafe &&
             situation.leaderDistance <= sPlayerbotAIConfig.reactDistance &&
             situation.nearbyPartyMembers >= 1 &&
-            situation.possibleTargetsCount > 0 &&
-            situation.possibleTargetsCount <= 2 &&
+            safeNearbyFight &&
             situation.balance >= 100 &&
             situation.botHealth >= sPlayerbotAIConfig.mediumHealth &&
             situation.botMana >= sPlayerbotAIConfig.lowMana &&
@@ -1516,8 +1543,9 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
             ((situation.shouldRepair && situation.nearbyRepair) ||
              ((situation.shouldSell || situation.shouldBuy) && situation.nearbyVendor));
         if (NeedsTownChores(situation) && IsSafeForTownChores(situation) && resupplyAllowed &&
-            (command == FriendCommand::Shop || townAccessNearby || resupplyInProgress || mode == FriendMode::Solo))
-            add(FriendIntent::Resupply, immediateTownChores ? 450 : (urgentTownChores ? 160 : 70));
+            (command == FriendCommand::Shop || townAccessNearby || resupplyInProgress ||
+             (mode == FriendMode::Solo && (!remoteBuyOnly || situation.calmDowntimeSeconds >= 180))))
+            add(FriendIntent::Resupply, immediateTownChores ? 450 : (urgentTownChores ? 160 : (remoteBuyOnly ? 25 : 70)));
 
         if (mode != FriendMode::Dungeon)
         {
@@ -1526,15 +1554,14 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
                     38 + gatherBias + boredom / 4 + forwardBias / 5 :
                     18 + gatherBias + boredom / 5 + forwardBias / 10);
 
-            if (situation.possibleTargetsCount > 0 && situation.botHealth >= FRIEND_HEAL_TOP_OFF_HEALTH &&
-                situation.botMana >= sPlayerbotAIConfig.lowMana)
+            if (safeNearbyFight && situation.botHealth >= FRIEND_HEAL_TOP_OFF_HEALTH)
                 add(FriendIntent::Grind, mode == FriendMode::Solo ?
                     115 + grindBias + boredom + forwardBias / 4 :
-                    (partyComfortable ? 70 + grindBias + boredom * 2 + forwardBias / 6 : 0));
+                    (partyComfortable ? 100 + grindBias + boredom * 2 + forwardBias / 6 : 0));
 
             if (safePullOpportunity)
                 add(FriendIntent::PullWithParty, partyComfortable ?
-                    70 + grindBias / 2 + boredom + forwardBias / 8 : 30);
+                    45 + grindBias / 2 + boredom / 2 + forwardBias / 8 : 20);
 
             if (!urgentTownChores && situation.botHealth >= FRIEND_HEAL_TOP_OFF_HEALTH &&
                 situation.botMana >= sPlayerbotAIConfig.lowMana)
@@ -1760,7 +1787,7 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
                 }, 35, 45);
                 return true;
             }
-            if (GetDamageTarget(situation, true))
+            if (GetDamageTarget(situation, true) || PrepareNearbyFightTarget(situation, "nearby"))
             {
                 if (TryFreeDamage(situation, "friend pull"))
                     return true;
@@ -2405,6 +2432,28 @@ Unit* FriendBotController::SelectDamageTarget(const FriendSituation& situation, 
     return nullptr;
 }
 
+Unit* FriendBotController::GetNearbyFightTarget(const FriendSituation& situation) const
+{
+    if (!ai || !situation.nearbyFightTargetGuid)
+        return nullptr;
+
+    Unit* target = ai->GetUnit(situation.nearbyFightTargetGuid);
+    return IsValidNearbyFightTarget(target, situation) ? target : nullptr;
+}
+
+bool FriendBotController::PrepareNearbyFightTarget(const FriendSituation& situation, const std::string& reason)
+{
+    Unit* target = GetNearbyFightTarget(situation);
+    if (!target)
+        return false;
+
+    SetCurrentDamageTarget(target, reason);
+    if (ai && ai->GetAiObjectContext())
+        ai->GetAiObjectContext()->GetValue<ObjectGuid>("attack target")->Set(target->GetObjectGuid());
+
+    return true;
+}
+
 Unit* FriendBotController::GetCrowdControlTarget(const FriendSituation& situation, const FriendAbility& ability, Unit* currentDamageTarget) const
 {
     if (!ai || !ai->GetAiObjectContext())
@@ -2520,6 +2569,52 @@ bool FriendBotController::IsValidFriendDamageTarget(Unit* target, bool allowCrow
         return false;
 
     return allowCrowdControlFallback || !ShouldAvoidBreakingCrowdControl(target);
+}
+
+bool FriendBotController::IsValidNearbyFightTarget(Unit* target, const FriendSituation& situation) const
+{
+    if (!ai || !ai->GetBot() || !IsUsableUnit(ai, target))
+        return false;
+
+    Player* bot = ai->GetBot();
+    if (situation.inTown)
+        return false;
+
+    if (sServerFacade.IsFriendlyTo(bot, target) || ShouldAvoidBreakingCrowdControl(target))
+        return false;
+
+    const float maxDistance = mode == FriendMode::Solo ?
+        sPlayerbotAIConfig.reactDistance * 1.5f : sPlayerbotAIConfig.reactDistance;
+    if (sServerFacade.GetDistance2d(bot, target) > maxDistance)
+        return false;
+
+    if (mode == FriendMode::Party)
+    {
+        if (!situation.leaderSafe || situation.leaderDistance > SoftLeashDistance(situation))
+            return false;
+
+        Unit* leader = ai->GetUnit(situation.leaderGuid);
+        if (leader && sServerFacade.GetDistance2d(leader, target) > sPlayerbotAIConfig.reactDistance)
+            return false;
+    }
+
+    const int32 levelDelta = static_cast<int32>(target->GetLevel()) - static_cast<int32>(bot->GetLevel());
+    if (levelDelta > 3)
+        return false;
+
+    if (IsEliteTarget(ai, target))
+        return false;
+
+    Creature* creature = dynamic_cast<Creature*>(target);
+    if (creature && creature->IsCritter())
+        return false;
+    if (creature && creature->GetCreatureInfo() && creature->GetCreatureInfo()->NpcFlags)
+        return false;
+
+    if (!AttackersValue::IsValid(target, bot, nullptr, false, false))
+        return false;
+
+    return PossibleAttackTargetsValue::IsPossibleTarget(target, bot, maxDistance, true);
 }
 
 bool FriendBotController::ShouldAvoidBreakingCrowdControl(Unit* target) const
@@ -3447,6 +3542,9 @@ FriendCombatStyle FriendBotController::GetCombatStyle(const FriendSituation& sit
     if (situation.botMana < sPlayerbotAIConfig.lowMana)
         return FriendCombatStyle::Dry;
 
+    if (situation.lowWater && IsLowPressureFight(situation) && situation.botMana < 95)
+        return FriendCombatStyle::Conserve;
+
     if (IsLowPressureFight(situation) && situation.botMana < FRIEND_MANA_DAMAGE_CONSERVE)
         return FriendCombatStyle::Conserve;
 
@@ -3478,6 +3576,11 @@ int32 FriendBotController::ManaSpendScorePenalty(const FriendSituation& situatio
         return 0;
 
     int32 extraPenalty = 0;
+    if (situation.lowWater && IsLowPressureFight(situation))
+        extraPenalty += ability.Has(FRIEND_ABILITY_DOT) ? 15 : 35;
+    else if (situation.lowWater && situation.botMana < sPlayerbotAIConfig.mediumMana)
+        extraPenalty += 20;
+
     if (ai && ai->GetBot() && ai->GetBot()->getClass() == CLASS_PRIEST &&
         IsLowPressureFight(situation) && situation.botMana < 95 &&
         situation.lowestPartyHealth >= FRIEND_HEAL_TOP_OFF_HEALTH)
@@ -5299,7 +5402,7 @@ void FriendBotController::MaybeProposeTownChores(const FriendSituation& situatio
 
     const bool urgent = situation.bagSpace >= 95 ||
         (situation.shouldRepair && situation.durability < 60) ||
-        situation.lowWater || situation.lowAmmo;
+        situation.lowAmmo;
     if (!urgent)
         return;
 
@@ -5308,7 +5411,7 @@ void FriendBotController::MaybeProposeTownChores(const FriendSituation& situatio
         line = "My bags are full. Say ok if we should find a vendor.";
     else if (situation.shouldRepair && situation.durability < 60)
         line = "My gear is getting rough. Say ok if we should repair.";
-    else if (situation.lowWater || situation.lowAmmo)
+    else if (situation.lowAmmo)
         line = "I'm low on supplies. Say ok if we should resupply.";
 
     if (ai->GetBot()->GetGroup())
@@ -5487,7 +5590,8 @@ FriendTaskType FriendBotController::SelectTaskForIntent(FriendIntent intent, con
         case FriendIntent::Grind:
             if (mode == FriendMode::Dungeon)
                 return FriendTaskType::None;
-            nextTask = situation.possibleTargetsCount > 0 ? FriendTaskType::GrindNearby : FriendTaskType::TravelToGrind;
+            nextTask = (situation.possibleTargetsCount > 0 || situation.nearbyFightTargetsCount > 0) ?
+                FriendTaskType::GrindNearby : FriendTaskType::TravelToGrind;
             lease = mode == FriendMode::Solo ? urand(35, 90) : urand(18, 45);
             break;
         case FriendIntent::Explore:
@@ -5568,9 +5672,10 @@ bool FriendBotController::ExecuteCurrentTask(const FriendSituation& situation)
             break;
 
         case FriendTaskType::GrindNearby:
-            if (mode != FriendMode::Dungeon && situation.possibleTargetsCount > 0)
+            if (mode != FriendMode::Dungeon &&
+                (situation.possibleTargetsCount > 0 || situation.nearbyFightTargetsCount > 0))
             {
-                if (GetDamageTarget(situation, true))
+                if (GetDamageTarget(situation, true) || PrepareNearbyFightTarget(situation, "nearby"))
                 {
                     if (TryFreeDamage(situation, "friend grind") ||
                         TryCatalogDamage(situation, "friend grind") ||
@@ -6309,6 +6414,7 @@ void FriendBotController::MaybeSayStatus(const FriendSituation& situation)
         out << ", calm " << situation.calmDowntimeSeconds << "s";
         out << ", " << BalanceName(situation.balance);
         out << ", targets " << static_cast<uint32>(situation.possibleTargetsCount);
+        out << ", nearbyFight " << static_cast<uint32>(situation.nearbyFightTargetsCount);
         out << ", town " << (situation.inTown ? "y" : "n");
         out << ", vendor " << (situation.nearbyVendor ? "y" : "n");
         out << ", repair " << (situation.nearbyRepair ? "y" : "n") << "]";
@@ -7127,8 +7233,8 @@ std::string FriendBotController::TaskName(FriendTaskType value)
         case FriendTaskType::OrbitLeader: return "orbit";
         case FriendTaskType::Resupply: return "resupply";
         case FriendTaskType::GatherNearby: return "gather";
-        case FriendTaskType::GrindNearby: return "grind";
-        case FriendTaskType::TravelToGrind: return "travel grind";
+        case FriendTaskType::GrindNearby: return "engage";
+        case FriendTaskType::TravelToGrind: return "travel engage";
         case FriendTaskType::TravelToGather: return "travel gather";
         case FriendTaskType::ExploreNearby: return "explore";
     }
@@ -7177,7 +7283,7 @@ std::string FriendBotController::IntentName(FriendIntent value)
         case FriendIntent::PullWithParty: return "pull";
         case FriendIntent::LootNearby: return "loot";
         case FriendIntent::Gather: return "gather";
-        case FriendIntent::Grind: return "grind";
+        case FriendIntent::Grind: return "engage";
         case FriendIntent::Explore: return "explore";
         case FriendIntent::HangOut: return "hang out";
         case FriendIntent::DealDamage: return "damage";

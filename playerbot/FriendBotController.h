@@ -161,17 +161,20 @@ namespace ai
         uint8 attackersCount = 0;
         uint8 attackersTargetingMeCount = 0;
         uint8 possibleTargetsCount = 0;
+        uint8 nearbyFightTargetsCount = 0;
         uint8 crowdControlledTargets = 0;
         uint8 balance = 100;
         float leaderDistance = 0.0f;
         float targetDistance = 0.0f;
         float nearestHostileDistance = 0.0f;
+        float nearbyFightTargetDistance = 0.0f;
         bool partyHeadingActive = false;
         uint8 partyHeadingConfidence = 0;
         float partyHeadingX = 0.0f;
         float partyHeadingY = 0.0f;
         ObjectGuid leaderGuid;
         ObjectGuid nearestHostileGuid;
+        ObjectGuid nearbyFightTargetGuid;
         ObjectGuid closestAttackerTargetingMeGuid;
         ObjectGuid vulnerablePartyAttackerGuid;
         ObjectGuid leaderTargetGuid;
@@ -241,8 +244,11 @@ namespace ai
         bool ShouldUseLegacySupportActions(const FriendSituation& situation) const;
         Unit* GetDamageTarget(const FriendSituation& situation, bool prepare);
         Unit* SelectDamageTarget(const FriendSituation& situation, bool allowCrowdControlFallback, std::string& reason);
+        Unit* GetNearbyFightTarget(const FriendSituation& situation) const;
+        bool PrepareNearbyFightTarget(const FriendSituation& situation, const std::string& reason);
         Unit* GetCrowdControlTarget(const FriendSituation& situation, const FriendAbility& ability, Unit* currentDamageTarget) const;
         bool IsValidFriendDamageTarget(Unit* target, bool allowCrowdControlFallback) const;
+        bool IsValidNearbyFightTarget(Unit* target, const FriendSituation& situation) const;
         bool ShouldAvoidBreakingCrowdControl(Unit* target) const;
         bool IsCrowdControlTargetWorthwhile(const FriendSituation& situation, const FriendAbility& ability,
             Unit* target, Unit* currentDamageTarget) const;
