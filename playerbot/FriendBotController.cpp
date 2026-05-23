@@ -30,7 +30,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v49";
+    const char* FRIEND_BOT_VERSION = "v50";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -1583,8 +1583,7 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
             static_cast<int32>(situation.partyHeadingConfidence) : 0;
         const bool nearbyFightAvailable = situation.possibleTargetsCount > 0 || situation.nearbyFightTargetsCount > 0;
         const bool safeNearbyFight = nearbyFightAvailable &&
-            situation.possibleTargetsCount <= 3 &&
-            situation.nearbyFightTargetsCount <= (mode == FriendMode::Solo ? 4 : 3);
+            situation.possibleTargetsCount <= 3;
         const bool partyComfortable = situation.leaderSafe &&
             situation.leaderDistance <= SoftLeashDistance(situation) &&
             situation.botHealth >= FRIEND_HEAL_TOP_OFF_HEALTH &&
@@ -5985,8 +5984,7 @@ FriendIntent FriendBotController::GetIdleTaskInterruptIntent(const FriendSituati
         situation.lowestPartyHealth >= FRIEND_HEAL_TOP_OFF_HEALTH &&
         !situation.damagedPartyMembers;
     const bool safeNearbyFight = situation.nearbyFightTargetsCount > 0 &&
-        situation.possibleTargetsCount <= 3 &&
-        situation.nearbyFightTargetsCount <= 3;
+        situation.possibleTargetsCount <= 3;
     if (mode == FriendMode::Party && partyComfortable && safeNearbyFight &&
         situation.calmDowntimeSeconds >= 8)
         return FriendIntent::Grind;
