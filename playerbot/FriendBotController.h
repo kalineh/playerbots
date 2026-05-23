@@ -294,6 +294,7 @@ namespace ai
         bool ExecuteTaskIntent(FriendIntent intent, const FriendSituation& situation);
         bool IsSafeForTaskActivity(const FriendSituation& situation) const;
         bool CanContinueTaskActivity(const FriendSituation& situation) const;
+        FriendIntent GetIdleTaskInterruptIntent(const FriendSituation& situation) const;
         FriendTaskType SelectTaskForIntent(FriendIntent intent, const FriendSituation& situation);
         bool ExecuteCurrentTask(const FriendSituation& situation);
         bool ExecuteTaskTravelGoal(const FriendSituation& situation, uint32 purpose, FriendTaskType workTask,

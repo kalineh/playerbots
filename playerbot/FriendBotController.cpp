@@ -30,7 +30,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v45";
+    const char* FRIEND_BOT_VERSION = "v46";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -548,6 +548,12 @@ namespace
             task == FriendTaskType::TravelToGrind ||
             task == FriendTaskType::TravelToGather ||
             task == FriendTaskType::ExploreNearby;
+    }
+
+    bool IsIdleTask(FriendTaskType task)
+    {
+        return task == FriendTaskType::HangOut ||
+            task == FriendTaskType::OrbitLeader;
     }
 
     FriendIntent IntentForTask(FriendTaskType task)
@@ -1460,7 +1466,13 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
         return FriendIntent::LootNearby;
 
     if (activeTask && !situation.inCombat && !localPartyInCombat)
+    {
+        const FriendIntent idleInterrupt = GetIdleTaskInterruptIntent(situation);
+        if (idleInterrupt != FriendIntent::Max)
+            return idleInterrupt;
+
         return IntentForTask(executionTask);
+    }
 
     const bool serviceTravelTarget = IsServiceTravelPurpose(taskTravelPurpose) ||
         IsServiceTravelPurpose(situation.travelTargetPurpose);
@@ -5700,6 +5712,39 @@ bool FriendBotController::CanContinueTaskActivity(const FriendSituation& situati
         return false;
 
     return true;
+}
+
+FriendIntent FriendBotController::GetIdleTaskInterruptIntent(const FriendSituation& situation) const
+{
+    if (!IsIdleTask(executionTask) || mode == FriendMode::Solo || command != FriendCommand::None)
+        return FriendIntent::Max;
+
+    if (situation.leaderSafe)
+    {
+        const float idleLeash = mode == FriendMode::Dungeon ?
+            PreferredLeaderDistance(situation) : SoftLeashDistance(situation);
+        if (situation.leaderDistance > idleLeash)
+            return FriendIntent::ReturnToParty;
+    }
+
+    if (IsSafeForTownChores(situation) && NeedsTownChores(situation) &&
+        ((situation.shouldRepair && situation.nearbyRepair) ||
+         ((situation.shouldSell || situation.shouldBuy) && situation.nearbyVendor)))
+        return FriendIntent::Resupply;
+
+    const bool partyComfortable = situation.leaderSafe &&
+        situation.leaderDistance <= SoftLeashDistance(situation) &&
+        situation.botHealth >= FRIEND_HEAL_TOP_OFF_HEALTH &&
+        situation.lowestPartyHealth >= FRIEND_HEAL_TOP_OFF_HEALTH &&
+        !situation.damagedPartyMembers;
+    const bool safeNearbyFight = situation.nearbyFightTargetsCount > 0 &&
+        situation.possibleTargetsCount <= 3 &&
+        situation.nearbyFightTargetsCount <= 3;
+    if (mode == FriendMode::Party && partyComfortable && safeNearbyFight &&
+        situation.calmDowntimeSeconds >= 8)
+        return FriendIntent::Grind;
+
+    return FriendIntent::Max;
 }
 
 FriendTaskType FriendBotController::SelectTaskForIntent(FriendIntent intent, const FriendSituation& situation)
