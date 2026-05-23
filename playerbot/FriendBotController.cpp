@@ -29,7 +29,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v41";
+    const char* FRIEND_BOT_VERSION = "v42";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -1512,9 +1512,12 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
         if (command == FriendCommand::Shop && IsSafeForTownChores(situation))
             add(FriendIntent::Resupply, 1000);
 
+        const bool immediateTownChores = NeedsTownChores(situation) &&
+            ((situation.shouldRepair && situation.nearbyRepair) ||
+             ((situation.shouldSell || situation.shouldBuy) && situation.nearbyVendor));
         if (NeedsTownChores(situation) && IsSafeForTownChores(situation) && resupplyAllowed &&
             (command == FriendCommand::Shop || townAccessNearby || resupplyInProgress || mode == FriendMode::Solo))
-            add(FriendIntent::Resupply, urgentTownChores ? 160 : 70);
+            add(FriendIntent::Resupply, immediateTownChores ? 450 : (urgentTownChores ? 160 : 70));
 
         if (mode != FriendMode::Dungeon)
         {
