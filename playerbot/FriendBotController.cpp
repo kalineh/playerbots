@@ -29,7 +29,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v42";
+    const char* FRIEND_BOT_VERSION = "v43";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -1354,12 +1354,12 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
     const bool soloFree = mode == FriendMode::Solo && command == FriendCommand::None;
     const bool partyNearby = !soloFree || !situation.leaderSafe || situation.leaderDistance <= SoftLeashDistance(situation);
     const bool localPartyInCombat = situation.partyInCombat && partyNearby;
-    const bool activeTask = executionTask != FriendTaskType::None && executionTaskUntil > now;
-    const bool activeResupplyTask = activeTask && IntentForTask(executionTask) == FriendIntent::Resupply;
+    const bool commandTaskActive = command == FriendCommand::Shop && executionTask == FriendTaskType::Resupply;
+    const bool activeTask = executionTask != FriendTaskType::None && (executionTaskUntil > now || commandTaskActive);
 
     float softLeash = SoftLeashDistance(situation);
     float hardLeash = HardLeashDistance(situation);
-    if (!activeResupplyTask && !soloFree && situation.leaderSafe && situation.leaderDistance > hardLeash &&
+    if (!activeTask && !soloFree && situation.leaderSafe && situation.leaderDistance > hardLeash &&
         (!situation.inCombat || mode == FriendMode::Dungeon || !situation.hasAttackers))
         return FriendIntent::ReturnToParty;
 
@@ -5378,14 +5378,21 @@ bool FriendBotController::ExecuteTaskIntent(FriendIntent intent, const FriendSit
     if (!ai || !ai->GetBot())
         return false;
 
+    const time_t now = time(nullptr);
+    const bool commandTaskActive = command == FriendCommand::Shop && executionTask == FriendTaskType::Resupply;
+    const bool activeMatchingTask = executionTask != FriendTaskType::None &&
+        IntentForTask(executionTask) == intent &&
+        (executionTaskUntil > now || commandTaskActive);
+
     if (!IsSafeForTaskActivity(situation))
     {
+        if (activeMatchingTask && CanContinueTaskActivity(situation))
+            return ExecuteCurrentTask(situation);
+
         ClearExecutionState();
-
-        if (situation.leaderSafe && situation.leaderDistance > PreferredLeaderDistance(situation))
-            return MoveInLeaderOrbit(situation, "move near leader", false);
-
-        return false;
+        SetResult(intent, "task interrupted", FriendExecutionResult::BlockedNotUseful);
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        return true;
     }
 
     FriendTaskType selected = SelectTaskForIntent(intent, situation);
@@ -5426,11 +5433,41 @@ bool FriendBotController::IsSafeForTaskActivity(const FriendSituation& situation
     return true;
 }
 
+bool FriendBotController::CanContinueTaskActivity(const FriendSituation& situation) const
+{
+    if (command == FriendCommand::HoldPosition || command == FriendCommand::ReturnToParty ||
+        command == FriendCommand::Recover)
+        return false;
+
+    if (situation.inCombat || situation.hasAttackers)
+        return false;
+
+    if (situation.botHealth < sPlayerbotAIConfig.mediumHealth ||
+        situation.botHealthDelta <= FRIEND_HEALTH_DROP_DANGER)
+        return false;
+
+    if (mode == FriendMode::Dungeon && situation.leaderSafe &&
+        situation.leaderDistance > SoftLeashDistance(situation))
+        return false;
+
+    const bool partyNearby = !situation.leaderSafe ||
+        situation.leaderDistance <= SoftLeashDistance(situation);
+    if (partyNearby &&
+        (situation.lowestPartyHealth < sPlayerbotAIConfig.lowHealth ||
+         situation.lowestPartyHealthDelta <= FRIEND_HEALTH_DROP_DANGER))
+        return false;
+
+    return true;
+}
+
 FriendTaskType FriendBotController::SelectTaskForIntent(FriendIntent intent, const FriendSituation& situation)
 {
     const time_t now = time(nullptr);
+    const bool commandTaskActive = command == FriendCommand::Shop && executionTask == FriendTaskType::Resupply;
     if (executionTask != FriendTaskType::None && executionTaskUntil > now &&
         IntentForTask(executionTask) == intent)
+        return executionTask;
+    if (commandTaskActive && IntentForTask(executionTask) == intent)
         return executionTask;
 
     FriendTaskType nextTask = FriendTaskType::None;
@@ -6209,11 +6246,12 @@ void FriendBotController::MaybeSayStatus(const FriendSituation& situation)
     std::ostringstream out;
     const std::string action = lastAction.empty() ? ResultName(lastResult) : lastAction;
     out << "[" << IntentName(lastIntent) << "] " << action;
-    const bool travelAction = lastIntent == FriendIntent::Resupply ||
-        lastIntent == FriendIntent::Gather ||
-        lastIntent == FriendIntent::Grind ||
-        lastIntent == FriendIntent::Explore ||
-        lastIntent == FriendIntent::HangOut ||
+    const bool taskOwnsTravelTarget = IsActiveTask(executionTask) && IntentForTask(executionTask) == lastIntent;
+    const bool travelAction = (taskOwnsTravelTarget &&
+        (lastIntent == FriendIntent::Resupply ||
+         lastIntent == FriendIntent::Gather ||
+         lastIntent == FriendIntent::Grind ||
+         lastIntent == FriendIntent::Explore)) ||
         Contains(action, "travel");
     if (travelAction && (situation.travelTargetActive || situation.travelTargetPreparing ||
         situation.travelTargetTraveling || situation.travelTargetWorking))
