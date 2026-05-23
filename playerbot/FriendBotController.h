@@ -294,6 +294,7 @@ namespace ai
         bool ExecuteTaskIntent(FriendIntent intent, const FriendSituation& situation);
         bool IsSafeForTaskActivity(const FriendSituation& situation) const;
         bool CanContinueTaskActivity(const FriendSituation& situation) const;
+        std::string TaskInterruptReason(const FriendSituation& situation) const;
         FriendIntent GetIdleTaskInterruptIntent(const FriendSituation& situation) const;
         FriendTaskType SelectTaskForIntent(FriendIntent intent, const FriendSituation& situation);
         bool ExecuteCurrentTask(const FriendSituation& situation);
@@ -308,6 +309,7 @@ namespace ai
         bool MoveToExplorePoint(const FriendSituation& situation);
         bool MoveInLeaderOrbit(const FriendSituation& situation, const std::string& action, bool urgent);
         bool PreferFreeDamage(const FriendSituation& situation) const;
+        bool TryStartMeleeAttack(Unit* target, const std::string& source);
         bool IsTargetSetupAction(const std::string& name) const;
         float PreferredLeaderDistance(const FriendSituation& situation) const;
         float SoftLeashDistance(const FriendSituation& situation) const;
