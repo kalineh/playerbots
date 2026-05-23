@@ -30,7 +30,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v50";
+    const char* FRIEND_BOT_VERSION = "v51";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -1216,6 +1216,18 @@ FriendSituation FriendBotController::BuildSituation()
         LootObjectStack* availableLoot = GetContextValue<LootObjectStack*>(context, "available loot", nullptr);
         if (availableLoot)
         {
+            uint8 scannedCorpses = 0;
+            std::list<ObjectGuid> nearbyCorpses = context->GetValue<std::list<ObjectGuid> >("nearest corpses")->Get();
+            for (std::list<ObjectGuid>::const_iterator itr = nearbyCorpses.begin(); itr != nearbyCorpses.end(); ++itr)
+            {
+                if (scannedCorpses++ >= 10)
+                    break;
+
+                LootObject loot(bot, *itr);
+                if (!loot.IsEmpty() && loot.guid.IsCreature() && loot.IsLootPossible(bot))
+                    availableLoot->Add(*itr);
+            }
+
             for (uint8 i = 0; i < 10; ++i)
             {
                 LootObject loot = availableLoot->GetLoot(sPlayerbotAIConfig.lootDistance);
