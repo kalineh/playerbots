@@ -30,7 +30,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v52";
+    const char* FRIEND_BOT_VERSION = "v53";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -672,6 +672,7 @@ void FriendBotController::Reset()
     executionTask = FriendTaskType::None;
     executionTaskUntil = 0;
     executionNextActionAt = 0;
+    resupplyEquipAttempted = false;
     taskTravelRequested = false;
     taskTravelPurpose = 0;
     proposalExpiresAt = 0;
@@ -742,7 +743,8 @@ void FriendBotController::RunTick(bool minimal)
         return;
     }
 
-    if (TryEquipUpgrades(situation))
+    const bool resupplyTaskActive = executionTask == FriendTaskType::Resupply || command == FriendCommand::Shop;
+    if (!resupplyTaskActive && TryEquipUpgrades(situation))
     {
         MaybeSayStatus(situation);
         MaybeProposeTownChores(situation);
@@ -4664,8 +4666,12 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
 
     if (situation.nearbyVendor)
     {
-        if (situation.shouldSell && TryEquipUpgrades(situation, true))
-            return true;
+        if (situation.shouldSell && !resupplyEquipAttempted)
+        {
+            resupplyEquipAttempted = true;
+            if (TryEquipUpgrades(situation))
+                return true;
+        }
 
         if (situation.shouldSell)
         {
@@ -6068,6 +6074,7 @@ FriendTaskType FriendBotController::SelectTaskForIntent(FriendIntent intent, con
     executionTask = nextTask;
     executionTaskUntil = now + lease;
     executionNextActionAt = 0;
+    resupplyEquipAttempted = false;
     taskTravelRequested = false;
     taskTravelPurpose = 0;
     return executionTask;
@@ -7379,6 +7386,7 @@ void FriendBotController::ClearExecutionState()
     executionTask = FriendTaskType::None;
     executionTaskUntil = 0;
     executionNextActionAt = 0;
+    resupplyEquipAttempted = false;
     taskTravelRequested = false;
     taskTravelPurpose = 0;
 }

@@ -373,6 +373,7 @@ namespace ai
         FriendTaskType executionTask = FriendTaskType::None;
         time_t executionTaskUntil = 0;
         time_t executionNextActionAt = 0;
+        bool resupplyEquipAttempted = false;
         bool taskTravelRequested = false;
         uint32 taskTravelPurpose = 0;
         time_t proposalExpiresAt = 0;
