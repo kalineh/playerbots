@@ -30,7 +30,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v55";
+    const char* FRIEND_BOT_VERSION = "v56";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -1520,6 +1520,24 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
     if (partyNearby && ShouldOpportunisticHeal(situation))
         return FriendIntent::SavePartyMember;
 
+    auto needsCrowdControl = [&](Unit* target)
+    {
+        return ai && ai->GetBot() &&
+            IsValidFriendDamageTarget(target, true) &&
+            !PossibleAttackTargetsValue::HasBreakableCC(target, ai->GetBot()) &&
+            !PossibleAttackTargetsValue::HasUnBreakableCC(target, ai->GetBot());
+    };
+    Unit* moonTarget = GetRaidIconTarget(FRIEND_RTI_MOON);
+    Unit* rtiCcTarget = ai ? ai->GetUnit(situation.rtiCcTargetGuid) : nullptr;
+    const bool markedCrowdControlTarget = needsCrowdControl(moonTarget) || needsCrowdControl(rtiCcTarget);
+    if (situation.inCombat && partyNearby && !situation.tankish &&
+        HasUsableCrowdControlAbility(situation) &&
+        (markedCrowdControlTarget ||
+         (situation.crowdControlledTargets == 0 &&
+             ((mode == FriendMode::Dungeon && situation.possibleTargetsCount > 1) ||
+              ((situation.ranged || situation.healerish) && situation.possibleTargetsCount >= 3)))))
+        return FriendIntent::CrowdControl;
+
     if (situation.inCombat && situation.attackersTargetingMeCount > 0 && fightSelfThreat)
         return FriendIntent::DealDamage;
 
@@ -1537,9 +1555,6 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
 
     if (manualBuffUntil > now && !situation.inCombat && !localPartyInCombat)
         return FriendIntent::BuffOrCureParty;
-
-    if (situation.inCombat && mode == FriendMode::Dungeon && situation.possibleTargetsCount > 1 && !situation.tankish)
-        return FriendIntent::CrowdControl;
 
     if (ShouldLootNow(situation, localPartyInCombat))
         return FriendIntent::LootNearby;
@@ -2977,11 +2992,15 @@ bool FriendBotController::ShouldAvoidBreakingCrowdControl(Unit* target) const
 bool FriendBotController::IsCrowdControlTargetWorthwhile(const FriendSituation& situation, const FriendAbility& ability,
     Unit* target, Unit* currentDamageTarget) const
 {
-    if (!ai || !ai->GetBot() || !IsHostileTarget(ai, target))
+    if (!ai || !ai->GetBot() || !IsValidFriendDamageTarget(target, true))
         return false;
 
     if (ability.Has(FRIEND_ABILITY_INTERRUPT))
         return target->IsNonMeleeSpellCasted(false);
+
+    if (PossibleAttackTargetsValue::HasBreakableCC(target, ai->GetBot()) ||
+        PossibleAttackTargetsValue::HasUnBreakableCC(target, ai->GetBot()))
+        return false;
 
     if (IsSkullTarget(target))
         return false;
@@ -3899,6 +3918,25 @@ bool FriendBotController::CanClassHeal() const
     }
 }
 
+bool FriendBotController::HasUsableCrowdControlAbility(const FriendSituation& situation) const
+{
+    for (const FriendAbility& ability : abilityCatalog.GetAbilities())
+    {
+        if (!ability.Has(FRIEND_ABILITY_CC) || ability.Has(FRIEND_ABILITY_INTERRUPT))
+            continue;
+
+        if (mode == FriendMode::Dungeon && ability.Has(FRIEND_ABILITY_FEAR))
+            continue;
+
+        if (ability.UsesMana() && situation.botMana < sPlayerbotAIConfig.lowMana)
+            continue;
+
+        return true;
+    }
+
+    return false;
+}
+
 bool FriendBotController::ShouldOpportunisticHeal(const FriendSituation& situation) const
 {
     if (!CanClassHeal() || situation.damagedPartyMembers == 0 ||
@@ -4488,7 +4526,7 @@ bool FriendBotController::TryCatalogCrowdControl(const FriendSituation& situatio
             continue;
 
         Unit* target = GetCrowdControlTarget(situation, ability, damageTarget);
-        if (!IsHostileTarget(ai, target))
+        if (!IsValidFriendDamageTarget(target, true))
             continue;
 
         int32 score = 20;

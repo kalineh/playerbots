@@ -118,6 +118,21 @@ namespace
             Contains(name, "vanish");
     }
 
+    bool IsCrowdControlName(const std::string& name)
+    {
+        return Contains(name, "polymorph") ||
+            Contains(name, "hex") ||
+            Contains(name, "sap") ||
+            Contains(name, "repentance") ||
+            Contains(name, "shackle undead") ||
+            Contains(name, "hibernate") ||
+            Contains(name, "banish") ||
+            Contains(name, "freezing trap") ||
+            Contains(name, "wyvern sting") ||
+            Contains(name, "scare beast") ||
+            Contains(name, "seduction");
+    }
+
     bool IsDamageCooldownName(const std::string& name)
     {
         return Contains(name, "recklessness") ||
@@ -237,6 +252,9 @@ namespace
 
         if (IsDefensiveName(lowerName))
             flags |= FRIEND_ABILITY_DEFENSIVE;
+
+        if (IsCrowdControlName(lowerName))
+            flags |= FRIEND_ABILITY_CC;
 
         if (IsDamageCooldownName(lowerName))
             flags |= FRIEND_ABILITY_DAMAGE_COOLDOWN;

@@ -237,6 +237,7 @@ namespace ai
         bool CanProtectPartyWithThreat(const FriendSituation& situation) const;
         int32 PartyThreatScore(Unit* victim) const;
         bool CanClassHeal() const;
+        bool HasUsableCrowdControlAbility(const FriendSituation& situation) const;
         bool ShouldOpportunisticHeal(const FriendSituation& situation) const;
         FriendCombatStyle GetCombatStyle(const FriendSituation& situation) const;
         bool ShouldConserveDamageMana(const FriendSituation& situation) const;
