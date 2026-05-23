@@ -29,7 +29,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v40";
+    const char* FRIEND_BOT_VERSION = "v41";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -2670,8 +2670,22 @@ bool FriendBotController::ShouldLootNow(const FriendSituation& situation, bool l
     if (command != FriendCommand::None && command != FriendCommand::StayClose)
         return false;
 
+    bool closeCreatureLoot = false;
+    if (ai && ai->GetBot() && ai->GetAiObjectContext())
+    {
+        LootObjectStack* availableLoot = GetContextValue<LootObjectStack*>(ai->GetAiObjectContext(), "available loot", nullptr);
+        if (availableLoot)
+        {
+            LootObject closeLoot = availableLoot->GetLoot(INTERACTION_DISTANCE + 2.0f);
+            closeCreatureLoot = !closeLoot.IsEmpty() && closeLoot.guid.IsCreature();
+        }
+    }
+
     if (situation.inCombat || situation.hasAttackers || localPartyInCombat)
-        return false;
+    {
+        if (!closeCreatureLoot || situation.inCombat || situation.hasAttackers)
+            return false;
+    }
 
     if (situation.botHealth < sPlayerbotAIConfig.mediumHealth)
         return false;
@@ -3083,13 +3097,6 @@ bool FriendBotController::MoveToUnitRange(Unit* target, float desiredDistance, c
     if (!bot->GetMotionMaster() || !IsUsableUnit(ai, target))
         return false;
 
-    if (IsMovingForAction(ai, lastAction, action))
-    {
-        SetResult(lastIntent, action, FriendExecutionResult::Done);
-        ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
-        return true;
-    }
-
     desiredDistance = std::max(sPlayerbotAIConfig.contactDistance, desiredDistance);
     const float distance = sServerFacade.GetDistance2d(bot, target);
     if (distance <= desiredDistance && bot->IsWithinLOSInMap(target, true))
@@ -3112,26 +3119,48 @@ bool FriendBotController::MoveToUnitRange(Unit* target, float desiredDistance, c
         dy /= length;
     }
 
-    float x = target->GetPositionX() + dx * desiredDistance;
-    float y = target->GetPositionY() + dy * desiredDistance;
-    float z = target->GetPositionZ();
-    const bool normalized = NormalizeFriendMovePosition(x, y, z);
+    const float baseAngle = std::atan2(dy, dx);
+    const float offsets[] = { 0.0f, 0.45f, -0.45f, 0.9f, -0.9f, 1.35f, -1.35f, 3.14159f };
+    const float radii[] = {
+        desiredDistance,
+        desiredDistance + sPlayerbotAIConfig.contactDistance,
+        std::max(sPlayerbotAIConfig.contactDistance, desiredDistance * 0.5f)
+    };
 
-    WorldPosition from(bot);
-    WorldPosition to(bot->GetMapId(), x, y, z);
-    if (!normalized || !from.canPathTo(to, bot) || !bot->IsWithinLOS(x, y, z + bot->GetCollisionHeight(), true))
+    for (float radius : radii)
     {
+        for (float offset : offsets)
+        {
+            float x = target->GetPositionX() + std::cos(baseAngle + offset) * radius;
+            float y = target->GetPositionY() + std::sin(baseAngle + offset) * radius;
+            float z = target->GetPositionZ();
+            if (!NormalizeFriendMovePosition(x, y, z))
+                continue;
+
+            ClearFriendMovement(false);
+            if (MoveFriendPoint(x, y, z))
+            {
+                SetResult(lastIntent, action, FriendExecutionResult::Done);
+                ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
+                return true;
+            }
+        }
+    }
+
+    if (IsHostileTarget(ai, target))
+    {
+        ClearFriendMovement(false);
         bot->GetMotionMaster()->MoveChase(target, desiredDistance, bot->GetAngle(target));
-    }
-    else
-    {
-        if (!MoveFriendPoint(x, y, z))
-            return false;
+        if (sServerFacade.isMoving(bot))
+        {
+            SetResult(lastIntent, action, FriendExecutionResult::Done);
+            ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
+            return true;
+        }
     }
 
-    SetResult(lastIntent, action, FriendExecutionResult::Done);
-    ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
-    return true;
+    SetResult(lastIntent, action + ":blocked", FriendExecutionResult::BlockedNotPossible);
+    return false;
 }
 
 bool FriendBotController::PrefersMeleeDamage(const FriendSituation& situation) const
