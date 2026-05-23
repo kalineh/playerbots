@@ -30,7 +30,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v56";
+    const char* FRIEND_BOT_VERSION = "v57";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -4069,11 +4069,16 @@ int32 FriendBotController::ThreatCautionScore(const FriendSituation& situation, 
         (botMaxHealth && victimMaxHealth && static_cast<uint64>(victimMaxHealth) * 100 >= static_cast<uint64>(botMaxHealth) * 120);
     if (!victimSturdier)
         return 0;
+    const bool threatAverseDps =
+        (botHealth && victimHealth && static_cast<uint64>(botHealth) * 100 < static_cast<uint64>(victimHealth) * 90) ||
+        (botMaxHealth && victimMaxHealth && static_cast<uint64>(botMaxHealth) * 100 < static_cast<uint64>(victimMaxHealth) * 90);
 
     const float botThreat = ThreatValue::GetThreat(bot, target);
     const float victimThreat = ThreatValue::GetThreat(victimPlayer, target);
-    if (botThreat <= 0.0f || victimThreat <= 0.0f)
+    if (victimThreat <= 0.0f)
         return 0;
+    if (botThreat <= 0.0f)
+        return threatAverseDps && targetHealth > 60 ? (IsPartyMeleeEngagedWith(target) ? 18 : 10) : 0;
 
     int32 score = 0;
     const float percent = botThreat * 100.0f / victimThreat;
@@ -4083,9 +4088,13 @@ int32 FriendBotController::ThreatCautionScore(const FriendSituation& situation, 
         score += 45;
     else if (percent >= 50.0f)
         score += 20;
+    else if (threatAverseDps && percent >= 35.0f)
+        score += 18;
 
     if (situation.ranged || situation.healerish)
         score += 10;
+    if (threatAverseDps)
+        score += IsPartyMeleeEngagedWith(target) ? 18 : 10;
     if (situation.botHealth < sPlayerbotAIConfig.mediumHealth)
         score += 15;
     if (targetHealth > 60)
