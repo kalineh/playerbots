@@ -30,7 +30,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v58";
+    const char* FRIEND_BOT_VERSION = "v59";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -388,8 +388,12 @@ namespace
             !item->GetProto() || !item->GetProto()->SellPrice)
             return false;
 
+        ItemPrototype const* proto = item->GetProto();
         static const uint32 HEARTHSTONE_ITEM_ID = 6948;
-        if (item->GetProto()->ItemId == HEARTHSTONE_ITEM_ID)
+        if (proto->ItemId == HEARTHSTONE_ITEM_ID)
+            return false;
+
+        if (IsFriendSupplyItem(proto, true) || IsFriendSupplyItem(proto, false))
             return false;
 
         AiObjectContext* context = ai->GetAiObjectContext();
@@ -698,6 +702,7 @@ void FriendBotController::Reset()
     executionTaskUntil = 0;
     executionNextActionAt = 0;
     resupplyEquipAttempted = false;
+    resupplySellAttempted = false;
     taskTravelRequested = false;
     taskTravelPurpose = 0;
     proposalExpiresAt = 0;
@@ -825,6 +830,8 @@ bool FriendBotController::HandleCommand(const std::string& rawCommand, Player* r
             executionTask = FriendTaskType::Resupply;
             executionTaskUntil = time(nullptr) + 180;
             executionNextActionAt = 0;
+            resupplyEquipAttempted = false;
+            resupplySellAttempted = false;
             taskTravelRequested = false;
             taskTravelPurpose = 0;
             ClearProposal();
@@ -949,6 +956,8 @@ bool FriendBotController::HandleCommand(const std::string& rawCommand, Player* r
         executionTask = FriendTaskType::Resupply;
         executionTaskUntil = time(nullptr) + 180;
         executionNextActionAt = 0;
+        resupplyEquipAttempted = false;
+        resupplySellAttempted = false;
         taskTravelRequested = false;
         taskTravelPurpose = 0;
         nextResupplyAttemptAt = 0;
@@ -2187,22 +2196,7 @@ FriendExecutionResult FriendBotController::TryServiceAction(const std::string& n
     }
     else if (name == "buy" && param == "vendor")
     {
-        result = TryDirectBuySupplies(npc, lastSituation) ? FriendExecutionResult::Done : FriendExecutionResult::Failed;
-        const std::string directBuyAction = lastAction;
-        const FriendExecutionResult directBuyResult = lastResult;
-        if (result != FriendExecutionResult::Done)
-        {
-            FriendExecutionResult legacyResult = TryActionWithParam(name, param, "rpg action");
-            if (legacyResult == FriendExecutionResult::Done)
-                result = legacyResult;
-            else if (StartsWith(directBuyAction, "direct buy blocked"))
-            {
-                SetResult(lastIntent, directBuyAction, directBuyResult);
-                result = directBuyResult;
-            }
-            else
-                result = legacyResult;
-        }
+        result = TryDirectBuySupplies(npc, lastSituation) ? FriendExecutionResult::Done : lastResult;
         if (result != FriendExecutionResult::Done && !StartsWith(lastAction, "direct buy blocked"))
             SetResult(lastIntent, "direct buy blocked", result);
     }
@@ -4827,8 +4821,9 @@ bool FriendBotController::ExecuteResupply(const FriendSituation& situation)
                 return true;
         }
 
-        if (situation.shouldSell)
+        if (situation.shouldSell && !resupplySellAttempted)
         {
+            resupplySellAttempted = true;
             if (TryServiceAction("sell", "friend", FriendVendorNpcFlags()) == FriendExecutionResult::Done)
             {
                 MaybeSayActivity(situation, "resupply-sell", {
@@ -6229,6 +6224,7 @@ FriendTaskType FriendBotController::SelectTaskForIntent(FriendIntent intent, con
     executionTaskUntil = now + lease;
     executionNextActionAt = 0;
     resupplyEquipAttempted = false;
+    resupplySellAttempted = false;
     taskTravelRequested = false;
     taskTravelPurpose = 0;
     return executionTask;
@@ -7552,6 +7548,7 @@ void FriendBotController::ClearExecutionState()
     executionTaskUntil = 0;
     executionNextActionAt = 0;
     resupplyEquipAttempted = false;
+    resupplySellAttempted = false;
     taskTravelRequested = false;
     taskTravelPurpose = 0;
 }
