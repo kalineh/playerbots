@@ -29,7 +29,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v39";
+    const char* FRIEND_BOT_VERSION = "v40";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -1811,7 +1811,7 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
                 return true;
             if (TryCatalogDamage(situation, "friend damage"))
                 return true;
-            if (PrefersMeleeDamage(situation) && MoveToDamageTarget(situation, "move to melee"))
+            if (TryFreeDamage(situation, "friend basic damage"))
                 return true;
             if (TryActions(DamageActions(situation), "friend fallback damage"))
                 return true;
@@ -2199,18 +2199,6 @@ Unit* FriendBotController::SelectDamageTarget(const FriendSituation& situation, 
         return candidate;
     };
 
-    auto isPossibleAttackCandidate = [&](Unit* candidate) -> bool
-    {
-        Player* bot = ai->GetBot();
-        if (!IsUsableUnit(ai, candidate) || sServerFacade.IsFriendlyTo(bot, candidate))
-            return false;
-
-        if (!PossibleAttackTargetsValue::IsPossibleTarget(candidate, bot, sPlayerbotAIConfig.sightDistance, true))
-            return false;
-
-        return candidate->IsInCombat() || candidate->GetVictim() || candidate->GetGuidValue(UNIT_FIELD_TARGET);
-    };
-
     Unit* target = nullptr;
     if (!situation.tankish && situation.closestAttackerTargetingMeGuid &&
         (ShouldFightToSurvive(situation) || SelfThreatDangerScore(situation) >= 45))
@@ -2347,7 +2335,7 @@ Unit* FriendBotController::SelectDamageTarget(const FriendSituation& situation, 
     for (std::list<ObjectGuid>::const_iterator itr = possibleTargets.begin(); itr != possibleTargets.end(); ++itr)
     {
         Unit* candidate = ai->GetUnit(*itr);
-        if (!IsValidFriendDamageTarget(candidate, true) && !isPossibleAttackCandidate(candidate))
+        if (!IsValidFriendDamageTarget(candidate, true))
             continue;
 
         if (ShouldAvoidBreakingCrowdControl(candidate))
@@ -2383,6 +2371,26 @@ Unit* FriendBotController::SelectDamageTarget(const FriendSituation& situation, 
 
     target = GetContextValue<Unit*>(context, "least hp target", nullptr);
     if (Unit* selected = consider(target, "least-hp"))
+        return selected;
+
+    Unit* nearestTarget = nullptr;
+    float nearestDistance = 0.0f;
+    std::list<ObjectGuid> nearbyNpcs = context->GetValue<std::list<ObjectGuid> >("nearest npcs no los")->Get();
+    for (std::list<ObjectGuid>::const_iterator itr = nearbyNpcs.begin(); itr != nearbyNpcs.end(); ++itr)
+    {
+        Unit* candidate = ai->GetUnit(*itr);
+        if (!IsValidFriendDamageTarget(candidate, true))
+            continue;
+
+        const float distance = sServerFacade.GetDistance2d(ai->GetBot(), candidate);
+        if (!nearestTarget || distance < nearestDistance)
+        {
+            nearestTarget = candidate;
+            nearestDistance = distance;
+        }
+    }
+
+    if (Unit* selected = consider(nearestTarget, "nearest"))
         return selected;
 
     if (allowCrowdControlFallback && crowdControlFallback)
@@ -2438,10 +2446,74 @@ Unit* FriendBotController::GetCrowdControlTarget(const FriendSituation& situatio
 
 bool FriendBotController::IsValidFriendDamageTarget(Unit* target, bool allowCrowdControlFallback) const
 {
-    if (!ai || !ai->GetBot() || !IsHostileTarget(ai, target))
+    if (!ai || !ai->GetBot() || !IsUsableUnit(ai, target))
         return false;
 
-    if (!PossibleAttackTargetsValue::IsValid(target, ai->GetBot(), sPlayerbotAIConfig.sightDistance, true, false))
+    Player* bot = ai->GetBot();
+    if (sServerFacade.IsFriendlyTo(bot, target))
+        return false;
+
+    if (!PossibleAttackTargetsValue::IsPossibleTarget(target, bot, sPlayerbotAIConfig.sightDistance, true))
+        return false;
+
+    const ObjectGuid targetGuid = target->GetObjectGuid();
+    bool explicitlyChosen = IsSkullTarget(target);
+    bool fightingParty = false;
+
+    AiObjectContext* context = ai->GetAiObjectContext();
+    if (context)
+    {
+        explicitlyChosen = explicitlyChosen ||
+            targetGuid == GetContextValue<ObjectGuid>(context, "attack target", ObjectGuid());
+
+        Unit* currentTarget = GetContextValue<Unit*>(context, "current target", nullptr);
+        Unit* dpsTarget = GetContextValue<Unit*>(context, "dps target", nullptr);
+        Unit* leastHpTarget = GetContextValue<Unit*>(context, "least hp target", nullptr);
+        Unit* rtiTarget = GetContextValue<Unit*>(context, "rti target", nullptr);
+        explicitlyChosen = explicitlyChosen ||
+            (currentTarget && currentTarget->GetObjectGuid() == targetGuid) ||
+            (dpsTarget && dpsTarget->GetObjectGuid() == targetGuid) ||
+            (leastHpTarget && leastHpTarget->GetObjectGuid() == targetGuid) ||
+            (rtiTarget && rtiTarget->GetObjectGuid() == targetGuid);
+    }
+
+    Player* leader = ai->GetGroupMaster();
+    if (leader && ai->IsSafe(leader) && leader->GetSelectionGuid() == targetGuid)
+        explicitlyChosen = true;
+
+    Unit* victim = target->GetVictim();
+    if (IsFriendlyTarget(ai, victim))
+        fightingParty = true;
+
+    ObjectGuid unitTargetGuid = target->GetGuidValue(UNIT_FIELD_TARGET);
+    if (unitTargetGuid)
+    {
+        Unit* unitTarget = ai->GetUnit(unitTargetGuid);
+        if (IsFriendlyTarget(ai, unitTarget))
+            fightingParty = true;
+    }
+
+    auto checkPartyMember = [&](Player* member)
+    {
+        if (!member || !member->IsAlive() || member->GetMapId() != bot->GetMapId() || !ai->IsSafe(member))
+            return;
+
+        if (member->GetVictim() == target || member->GetSelectionGuid() == targetGuid)
+            fightingParty = true;
+
+        if (victim == member || target->GetGuidValue(UNIT_FIELD_TARGET) == member->GetObjectGuid())
+            fightingParty = true;
+    };
+
+    checkPartyMember(bot);
+    if (Group* group = bot->GetGroup())
+    {
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            checkPartyMember(ref->getSource());
+    }
+
+    const bool personallyHostile = sServerFacade.IsHostileTo(bot, target);
+    if (!personallyHostile && !explicitlyChosen && !fightingParty)
         return false;
 
     return allowCrowdControlFallback || !ShouldAvoidBreakingCrowdControl(target);
@@ -2696,28 +2768,28 @@ bool FriendBotController::TryReachAbilityTarget(const FriendAbility& ability, Un
     if (!ShouldMoveForAbilityTarget(ability, target))
         return false;
 
-    const bool hostile = IsHostileTarget(ai, target);
+    const bool damageTarget = IsValidFriendDamageTarget(target, true);
     const bool friendly = IsFriendlyTarget(ai, target);
-    if (!hostile && !friendly)
+    if (!damageTarget && !friendly)
         return false;
 
     AiObjectContext* context = ai->GetAiObjectContext();
     SpellCastResult checkResult = SPELL_CAST_OK;
     bool canEventuallyCast = ai->CanCastSpell(ability.spellId, target, 0, true, nullptr, true, false, false, &checkResult);
-    if (!canEventuallyCast && hostile && ability.Has(FRIEND_ABILITY_DAMAGE) && ability.maxRange <= 0.0f)
+    if (!canEventuallyCast && damageTarget && ability.Has(FRIEND_ABILITY_DAMAGE) && ability.maxRange <= 0.0f)
         canEventuallyCast = true;
 
     if (!canEventuallyCast)
         return false;
 
-    if (hostile)
+    if (damageTarget)
     {
         context->GetValue<Unit*>("current target")->Set(target);
         bot->SetSelectionGuid(target->GetObjectGuid());
     }
 
     float desiredDistance = sPlayerbotAIConfig.spellDistance;
-    if (hostile && (ability.Has(FRIEND_ABILITY_MELEE) || ability.maxRange <= 0.0f))
+    if (damageTarget && (ability.Has(FRIEND_ABILITY_MELEE) || ability.maxRange <= 0.0f))
     {
         desiredDistance = std::max(sPlayerbotAIConfig.meleeDistance, sPlayerbotAIConfig.contactDistance);
     }
@@ -2736,7 +2808,7 @@ bool FriendBotController::TryReachAbilityTarget(const FriendAbility& ability, Un
 bool FriendBotController::TryFreeDamage(const FriendSituation& situation, const std::string& source)
 {
     Unit* target = GetDamageTarget(situation, true);
-    if (!IsHostileTarget(ai, target))
+    if (!IsValidFriendDamageTarget(target, true))
         return false;
 
     if (TryDruidCombatForm(situation, source))
@@ -2831,7 +2903,7 @@ bool FriendBotController::TryImproveRangedCombatSpacing(const FriendSituation& s
         return false;
 
     Unit* target = GetDamageTarget(situation, true);
-    if (!IsHostileTarget(ai, target) || target->GetVictim() == bot)
+    if (!IsValidFriendDamageTarget(target, true) || target->GetVictim() == bot)
         return false;
 
     const float distance = sServerFacade.GetDistance2d(bot, target);
@@ -2984,7 +3056,7 @@ bool FriendBotController::MoveToDamageTarget(const FriendSituation& situation, c
         return false;
 
     Unit* target = GetDamageTarget(situation, true);
-    if (!IsHostileTarget(ai, target))
+    if (!IsValidFriendDamageTarget(target, true))
         return false;
 
     Player* bot = ai->GetBot();
@@ -3484,7 +3556,7 @@ bool FriendBotController::TryCastAbility(const FriendAbility& ability, Unit* tar
             return false;
     }
 
-    if (IsHostileTarget(ai, target) && ability.Has(FRIEND_ABILITY_MELEE))
+    if (IsValidFriendDamageTarget(target, true) && ability.Has(FRIEND_ABILITY_MELEE))
     {
         const float desiredDistance = std::max(sPlayerbotAIConfig.meleeDistance, sPlayerbotAIConfig.contactDistance);
         if (sServerFacade.GetDistance2d(ai->GetBot(), target) > desiredDistance || !ai->GetBot()->IsWithinLOSInMap(target, true))
@@ -3561,9 +3633,9 @@ bool FriendBotController::ShouldMoveForAbilityTarget(const FriendAbility& abilit
     if (ability.Has(FRIEND_ABILITY_MOVEMENT))
         return false;
 
-    const bool hostile = IsHostileTarget(ai, target);
+    const bool damageTarget = IsValidFriendDamageTarget(target, true);
     const bool friendly = IsFriendlyTarget(ai, target);
-    if (!hostile && !friendly)
+    if (!damageTarget && !friendly)
         return false;
 
     const bool pointBlank = ability.maxRange <= sPlayerbotAIConfig.contactDistance;
@@ -3589,7 +3661,7 @@ bool FriendBotController::ShouldMoveForAbilityTarget(const FriendAbility& abilit
         }
     }
 
-    if (hostile && pointBlank && ability.Has(FRIEND_ABILITY_AOE) && !explicitUnitTarget)
+    if (damageTarget && pointBlank && ability.Has(FRIEND_ABILITY_AOE) && !explicitUnitTarget)
         return false;
 
     if (pointBlank && !explicitUnitTarget && !destinationTarget && !ability.Has(FRIEND_ABILITY_MELEE))
@@ -3604,7 +3676,7 @@ bool FriendBotController::TryCatalogDamage(const FriendSituation& situation, con
         return false;
 
     Unit* target = GetDamageTarget(situation, true);
-    if (!IsHostileTarget(ai, target))
+    if (!IsValidFriendDamageTarget(target, true))
         return false;
 
     struct Candidate
