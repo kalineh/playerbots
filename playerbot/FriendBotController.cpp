@@ -30,7 +30,7 @@ using namespace ai;
 
 namespace
 {
-    const char* FRIEND_BOT_VERSION = "v53";
+    const char* FRIEND_BOT_VERSION = "v54";
     const uint8 FRIEND_MANA_BUFF_COMFORT = 75;
     const uint8 FRIEND_MANA_DAMAGE_CONSERVE = 85;
     const float FRIEND_RECOVER_HOSTILE_DISTANCE = 22.0f;
@@ -6760,7 +6760,7 @@ bool FriendBotController::MoveNearLeader(const FriendSituation& situation, const
         !ai->IsSafe(leader) || !ai->CanMove())
         return false;
 
-    if (!urgent)
+    if (!urgent && situation.leaderDistance <= SoftLeashDistance(situation))
         return MoveInLeaderOrbit(situation, action, false);
 
     const float stopDistance = urgent ? std::max(ai->GetRange("follow") * 0.75f, 6.0f) : PreferredLeaderDistance(situation);
@@ -6772,9 +6772,20 @@ bool FriendBotController::MoveNearLeader(const FriendSituation& situation, const
         return true;
     }
 
+    if (IsMovingForAction(ai, lastAction, action))
+    {
+        SetResult(lastIntent, action, FriendExecutionResult::Done);
+        ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
+        return true;
+    }
+
     ClearFriendMovement(false);
     if (!MoveFriendPoint(leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ()))
-        return false;
+    {
+        SetResult(lastIntent, action + ":move failed", FriendExecutionResult::Failed);
+        ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+        return true;
+    }
 
     SetResult(lastIntent, action, FriendExecutionResult::Done);
     ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
