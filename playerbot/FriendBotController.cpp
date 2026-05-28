@@ -5895,7 +5895,7 @@ bool FriendBotController::WantsTownProgression(const FriendSituation& situation)
     const bool soloAutonomy = mode == FriendMode::Solo;
     const bool planningWindow = alreadyTownReady || manualShop || situation.calmDowntimeSeconds >= 45;
 
-    if (!manualShop && !soloAutonomy)
+    if (!manualShop && !soloAutonomy && !alreadyTownReady)
         return false;
 
     const time_t now = time(nullptr);
@@ -6114,7 +6114,8 @@ bool FriendBotController::TrySoftBagUpgrade(const FriendSituation& situation)
 
 bool FriendBotController::TrySoftGearUpgrade(const FriendSituation& situation)
 {
-    if (!ai || !ai->GetBot() || !situation.nearbyVendor || !situation.shouldUpgradeGear)
+    if (!ai || !ai->GetBot() || (!situation.inTown && !situation.nearbyVendor && !situation.nearbyRepair) ||
+        !situation.shouldUpgradeGear)
         return false;
 
     const time_t now = time(nullptr);
@@ -6128,10 +6129,11 @@ bool FriendBotController::TrySoftGearUpgrade(const FriendSituation& situation)
         bot->GetMoney();
 
     uint32 quality = ITEM_QUALITY_NORMAL;
-    if (bot->GetLevel() >= 18 && freeMoney >= cost * 8)
+    if (bot->GetLevel() >= 8 && freeMoney >= cost && bot->GetMoney() >= cost)
     {
         quality = ITEM_QUALITY_UNCOMMON;
-        cost *= 2;
+        if (bot->GetLevel() >= 18 && freeMoney >= cost * 2 && bot->GetMoney() >= cost * 2)
+            cost *= 2;
     }
     if (bot->GetLevel() >= 35 && freeMoney >= cost * 8)
     {
