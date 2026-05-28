@@ -70,6 +70,8 @@ namespace
     const int32 FRIEND_INTENT_FAILURE_MAX_PENALTY = 240;
     const uint32 FRIEND_TRADE_TIMEOUT_SECONDS = 45;
     const float FRIEND_TRADE_MAX_APPROACH_DISTANCE = 80.0f;
+    const uint32 FRIEND_ACTIVITY_COOLDOWN_PERCENT = 75;
+    const uint32 FRIEND_ACTIVITY_MIN_COOLDOWN = 15;
 
     uint32 FriendVendorNpcFlags()
     {
@@ -1784,15 +1786,35 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
             return true;
 
         case FriendIntent::ReturnToParty:
-            return MoveNearLeader(situation,
+        {
+            bool moved = MoveNearLeader(situation,
                 command == FriendCommand::ReturnToParty ? "come" : "move near leader",
                 command == FriendCommand::ReturnToParty);
+            if (moved)
+                MaybeSayActivity(situation, "return", {
+                    "Coming back.",
+                    "Moving back to you."
+                }, 30, 45);
+            return moved;
+        }
 
         case FriendIntent::ImprovePosition:
             if (TryImproveRangedCombatSpacing(situation, "ranged spacing"))
+            {
+                MaybeSayActivity(situation, "position", {
+                    "Repositioning.",
+                    "Getting a better angle."
+                }, 22, 45);
                 return true;
+            }
             if (TryActions(PositionActions(situation), "friend position"))
+            {
+                MaybeSayActivity(situation, "position", {
+                    "Repositioning.",
+                    "Getting a better angle."
+                }, 22, 45);
                 return true;
+            }
             if (ShouldConserveDamageMana(situation) && TryFreeDamage(situation, "friend free damage"))
                 return true;
             if (TryCatalogDamage(situation, "friend damage"))
@@ -1881,6 +1903,11 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
                         "Hold on, healing.",
                         "I've got heals."
                     }, 30, 45);
+                else
+                    MaybeSayActivity(situation, "heal", {
+                        "Healing.",
+                        "Topping up."
+                    }, 18, 45);
                 return true;
             }
             if (TryActions(HealActions(situation), "friend fallback heal"))
@@ -1891,6 +1918,11 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
                         "Hold on, healing.",
                         "I've got heals."
                     }, 30, 45);
+                else
+                    MaybeSayActivity(situation, "heal", {
+                        "Healing.",
+                        "Topping up."
+                    }, 18, 45);
                 return true;
             }
             if (situation.inCombat || situation.partyInCombat)
@@ -1899,9 +1931,21 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
 
         case FriendIntent::BuffOrCureParty:
             if (TryCatalogSupport(situation, "friend support"))
+            {
+                MaybeSayActivity(situation, "support", {
+                    "Helping with support.",
+                    "Taking care of buffs."
+                }, 18, 60);
                 return true;
+            }
             if (ShouldUseLegacySupportActions(situation) && TryActions(BuffOrCureActions(situation), "friend fallback support"))
+            {
+                MaybeSayActivity(situation, "support", {
+                    "Helping with support.",
+                    "Taking care of buffs."
+                }, 18, 60);
                 return true;
+            }
             if (situation.hasCreatureLoot && ExecuteLoot(situation))
                 return true;
             if (situation.leaderSafe && situation.leaderDistance > PreferredLeaderDistance(situation))
@@ -1910,9 +1954,21 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
 
         case FriendIntent::CrowdControl:
             if (TryCatalogCrowdControl(situation, "friend cc"))
+            {
+                MaybeSayActivity(situation, "cc", {
+                    "Crowd controlling one.",
+                    "Locking one down."
+                }, 24, 60);
                 return true;
+            }
             if (TryActions(CrowdControlActions(situation), "friend fallback cc"))
+            {
+                MaybeSayActivity(situation, "cc", {
+                    "Crowd controlling one.",
+                    "Locking one down."
+                }, 24, 60);
                 return true;
+            }
             if (ShouldConserveDamageMana(situation) && TryFreeDamage(situation, "friend free damage"))
                 return true;
             if (TryCatalogDamage(situation, "friend damage"))
@@ -1982,11 +2038,29 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
                 TryDruidCombatForm(situation, "friend druid form"))
                 return true;
             if (TryCatalogDamage(situation, "friend damage"))
+            {
+                MaybeSayActivity(situation, "damage", {
+                    "Assisting damage.",
+                    "On your target."
+                }, 14, 75);
                 return true;
+            }
             if (TryFreeDamage(situation, "friend basic damage"))
+            {
+                MaybeSayActivity(situation, "damage", {
+                    "Assisting damage.",
+                    "On your target."
+                }, 14, 75);
                 return true;
+            }
             if (TryActions(DamageActions(situation), "friend fallback damage"))
+            {
+                MaybeSayActivity(situation, "damage", {
+                    "Assisting damage.",
+                    "On your target."
+                }, 14, 75);
                 return true;
+            }
             if (MoveToDamageTarget(situation, "move to attack"))
                 return true;
             if (situation.partyInCombat && situation.leaderSafe && situation.leaderDistance > SoftLeashDistance(situation))
@@ -7089,8 +7163,6 @@ void FriendBotController::MaybeSayActivity(const FriendSituation& situation, con
     const time_t now = time(nullptr);
     if (now < nextActivityBarkAt)
         return;
-    if (key == lastActivityBark && now < nextActivityBarkAt + static_cast<time_t>(cooldownSeconds))
-        return;
 
     if (chancePercent < 100 && urand(1, 100) > chancePercent)
         return;
@@ -7114,6 +7186,9 @@ void FriendBotController::MaybeSayActivity(const FriendSituation& situation, con
         ai->Say(selected);
 
     lastActivityBark = key;
+    cooldownSeconds = std::max<uint32>(
+        FRIEND_ACTIVITY_MIN_COOLDOWN,
+        cooldownSeconds * FRIEND_ACTIVITY_COOLDOWN_PERCENT / 100);
     nextActivityBarkAt = now + cooldownSeconds;
 }
 
