@@ -1521,15 +1521,10 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
     const bool selfHealthPressure = situation.botHealth < sPlayerbotAIConfig.lowHealth ||
         situation.botHealthDelta <= FRIEND_HEALTH_DROP_DANGER ||
         (situation.botHealth < sPlayerbotAIConfig.mediumHealth && situation.botHealthDelta <= FRIEND_HEALTH_DROP_NOTICE);
-    const bool selfActivelyThreatened = situation.botHasThreat || situation.hasAttackers ||
-        situation.attackersTargetingMeCount > 0;
     if (selfHealthPressure)
     {
         if (fightSelfThreat && SelfThreatDangerScore(situation) < 80)
             return FriendIntent::DealDamage;
-
-        if (CanClassHeal() && !selfActivelyThreatened)
-            return FriendIntent::SavePartyMember;
 
         return FriendIntent::SaveSelf;
     }
