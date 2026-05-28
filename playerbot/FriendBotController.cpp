@@ -1902,7 +1902,8 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
                 }, 22, 45);
                 return true;
             }
-            if (ShouldConserveDamageMana(situation) && TryFreeDamage(situation, "friend free damage"))
+            if (ShouldConserveDamageMana(situation) && HasRangedWeaponPull() &&
+                TryAction("shoot", "friend free ranged damage") == FriendExecutionResult::Done)
                 return true;
             if (TryCatalogDamage(situation, "friend damage"))
                 return true;
@@ -3984,7 +3985,9 @@ bool FriendBotController::TryImproveRangedCombatSpacing(const FriendSituation& s
 
     if (IsMovingForAction(ai, lastAction, action))
     {
-        return false;
+        SetResult(lastIntent, action, FriendExecutionResult::Done);
+        ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
+        return true;
     }
 
     float x = 0.0f;
