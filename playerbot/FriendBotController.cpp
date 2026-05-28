@@ -88,6 +88,44 @@ namespace
             actions.push_back(name);
     }
 
+    bool IsPriorityCreatureLoot(Player* bot, const LootObject& loot)
+    {
+        if (!bot || loot.IsEmpty() || !loot.guid.IsCreature())
+            return false;
+
+        PlayerbotAI* ai = bot->GetPlayerbotAI();
+        if (!ai)
+            return false;
+
+        Creature* creature = ai->GetCreature(loot.guid);
+        if (!creature || sServerFacade.GetDeathState(creature) != CORPSE || !creature->m_loot)
+            return false;
+
+        if (!creature->m_loot->CanLoot(bot))
+            return false;
+
+        Group* group = bot->GetGroup();
+        if (!group)
+            return true;
+
+        LootAccess const* lootAccess = reinterpret_cast<LootAccess const*>(creature->m_loot);
+        if (!lootAccess)
+            return true;
+
+        const ObjectGuid botGuid = bot->GetObjectGuid();
+        if (lootAccess->m_currentLooterGuid == botGuid || lootAccess->m_masterOwnerGuid == botGuid)
+            return true;
+
+        if (lootAccess->m_lootMethod == NOT_GROUP_TYPE_LOOT || lootAccess->m_lootMethod == FREE_FOR_ALL)
+            return true;
+
+        for (LootItem* item : lootAccess->m_lootItems)
+            if (item && item->freeForAll && !item->isBlocked)
+                return true;
+
+        return false;
+    }
+
     bool IsServiceTravelPurpose(uint32 purpose)
     {
         return purpose == FRIEND_VENDOR_TRAVEL_PURPOSE ||
@@ -1173,7 +1211,9 @@ std::string FriendBotController::FormatReport() const
     out << ", abilities=" << static_cast<uint32>(abilityCatalog.GetAbilities().size());
     if (!lastWeightsLine.empty())
         out << ", " << lastWeightsLine;
-    if (lastSituation.hasCreatureLoot)
+    if (lastSituation.hasPriorityCreatureLoot)
+        out << ", ownLoot";
+    else if (lastSituation.hasCreatureLoot)
         out << ", loot";
     if (NeedsTownChores(lastSituation))
         out << ", chores";
@@ -1281,16 +1321,28 @@ FriendSituation FriendBotController::BuildSituation()
                     availableLoot->Add(*itr);
             }
 
-            for (uint8 i = 0; i < 10; ++i)
+            std::vector<LootObject> orderedLoot = availableLoot->OrderByDistance(sPlayerbotAIConfig.lootDistance);
+            uint8 checkedLoot = 0;
+            for (const LootObject& loot : orderedLoot)
             {
-                LootObject loot = availableLoot->GetLoot(sPlayerbotAIConfig.lootDistance);
-                if (loot.IsEmpty())
+                if (checkedLoot++ >= 10)
                     break;
 
                 if (loot.guid.IsCreature())
                 {
                     situation.hasCreatureLoot = true;
-                    break;
+                    if (IsPriorityCreatureLoot(bot, loot))
+                    {
+                        WorldObject* lootWorldObject = loot.GetWorldObject(bot);
+                        if (lootWorldObject)
+                        {
+                            situation.hasPriorityCreatureLoot = true;
+                            situation.priorityCreatureLootDistance = sServerFacade.GetDistance2d(bot, lootWorldObject);
+                            break;
+                        }
+                    }
+
+                    continue;
                 }
 
                 availableLoot->Remove(loot.guid);
@@ -1544,6 +1596,9 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
 
     if (partyNearby && ShouldOpportunisticHeal(situation))
         return FriendIntent::SavePartyMember;
+
+    if (situation.hasPriorityCreatureLoot && ShouldLootNow(situation, localPartyInCombat))
+        return FriendIntent::LootNearby;
 
     auto needsCrowdControl = [&](Unit* target)
     {
@@ -3210,6 +3265,33 @@ bool FriendBotController::ShouldLootNow(const FriendSituation& situation, bool l
     if (command != FriendCommand::None && command != FriendCommand::StayClose)
         return false;
 
+    const bool partyNearby = situation.leaderSafe && situation.leaderDistance <= SoftLeashDistance(situation);
+    const bool closePriorityCreatureLoot = situation.hasPriorityCreatureLoot &&
+        situation.priorityCreatureLootDistance <= INTERACTION_DISTANCE + 2.0f;
+
+    if (situation.hasPriorityCreatureLoot)
+    {
+        if (situation.hasAttackers || situation.attackersTargetingMeCount > 0)
+            return false;
+
+        if (situation.botHealth < sPlayerbotAIConfig.mediumHealth)
+            return false;
+
+        if (partyNearby && situation.lowestPartyHealth < sPlayerbotAIConfig.mediumHealth)
+            return false;
+
+        if (mode == FriendMode::Solo)
+            return true;
+
+        if (!situation.leaderSafe)
+            return closePriorityCreatureLoot;
+
+        if (situation.leaderDistance > SoftLeashDistance(situation))
+            return closePriorityCreatureLoot;
+
+        return true;
+    }
+
     bool closeCreatureLoot = false;
     if (ai && ai->GetBot() && ai->GetAiObjectContext())
     {
@@ -3230,7 +3312,6 @@ bool FriendBotController::ShouldLootNow(const FriendSituation& situation, bool l
     if (situation.botHealth < sPlayerbotAIConfig.mediumHealth)
         return false;
 
-    const bool partyNearby = situation.leaderSafe && situation.leaderDistance <= SoftLeashDistance(situation);
     if (partyNearby && situation.lowestPartyHealth < sPlayerbotAIConfig.mediumHealth)
         return false;
 

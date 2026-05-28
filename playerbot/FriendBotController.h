@@ -109,6 +109,7 @@ namespace ai
         bool hasTarget = false;
         bool targetIsElite = false;
         bool hasCreatureLoot = false;
+        bool hasPriorityCreatureLoot = false;
         bool partyInCombat = false;
         bool leaderSafe = false;
         bool leaderInCombat = false;
@@ -166,6 +167,7 @@ namespace ai
         uint8 balance = 100;
         float leaderDistance = 0.0f;
         float targetDistance = 0.0f;
+        float priorityCreatureLootDistance = 0.0f;
         float nearestHostileDistance = 0.0f;
         float nearbyFightTargetDistance = 0.0f;
         bool partyHeadingActive = false;
