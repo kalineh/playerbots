@@ -23,7 +23,8 @@ namespace ai
         ReturnToParty,
         HoldPosition,
         Recover,
-        Shop
+        Shop,
+        Pull
     };
 
     enum class FriendMode : uint8
@@ -249,6 +250,13 @@ namespace ai
         bool ShouldUseLegacySupportActions(const FriendSituation& situation) const;
         Unit* GetDamageTarget(const FriendSituation& situation, bool prepare);
         Unit* SelectDamageTarget(const FriendSituation& situation, bool allowCrowdControlFallback, std::string& reason);
+        Unit* SelectPullTarget(const FriendSituation& situation, std::string& reason) const;
+        bool IsValidPullTarget(Unit* target, const FriendSituation& situation, bool explicitTarget) const;
+        bool HasRangedPullCapability() const;
+        bool HasRangedWeaponPull() const;
+        bool IsPullDamageAbility(const FriendAbility& ability) const;
+        bool TryRangedPull(const FriendSituation& situation, const std::string& source);
+        bool TryCatalogPullDamage(Unit* target, const FriendSituation& situation, const std::string& source);
         Unit* GetNearbyFightTarget(const FriendSituation& situation) const;
         bool PrepareNearbyFightTarget(const FriendSituation& situation, const std::string& reason);
         Unit* GetCrowdControlTarget(const FriendSituation& situation, const FriendAbility& ability, Unit* currentDamageTarget) const;
@@ -339,7 +347,6 @@ namespace ai
         std::vector<std::string> HealActions(const FriendSituation& situation) const;
         std::vector<std::string> BuffOrCureActions(const FriendSituation& situation) const;
         std::vector<std::string> CrowdControlActions(const FriendSituation& situation) const;
-        std::vector<std::string> PullActions(const FriendSituation& situation) const;
         std::vector<std::string> DamageActions(const FriendSituation& situation) const;
 
         static std::string CommandName(FriendCommand value);

@@ -72,6 +72,8 @@ namespace
     const float FRIEND_TRADE_MAX_APPROACH_DISTANCE = 80.0f;
     const uint32 FRIEND_ACTIVITY_COOLDOWN_PERCENT = 75;
     const uint32 FRIEND_ACTIVITY_MIN_COOLDOWN = 15;
+    const float FRIEND_PULL_MIN_DISTANCE = 8.0f;
+    const float FRIEND_PULL_LEADER_LOOK_ARC = M_PI_F / 3.0f;
 
     uint32 FriendVendorNpcFlags()
     {
@@ -1059,6 +1061,28 @@ bool FriendBotController::HandleCommand(const std::string& rawCommand, Player* r
         return true;
     }
 
+    if (cmd == "pull")
+    {
+        abilityCatalog.Refresh(ai);
+        if (!HasRangedPullCapability())
+        {
+            response = "I don't have a ranged pull.";
+            return true;
+        }
+
+        command = FriendCommand::Pull;
+        executionTask = FriendTaskType::None;
+        executionTaskUntil = 0;
+        executionNextActionAt = 0;
+        taskTravelRequested = false;
+        taskTravelPurpose = 0;
+        ClearIntentFailurePenalties();
+        if (requester && requester->GetSelectionGuid() && ai && ai->GetAiObjectContext())
+            ai->GetAiObjectContext()->GetValue<ObjectGuid>("attack target")->Set(requester->GetSelectionGuid());
+        response = "Looking for a pull.";
+        return true;
+    }
+
     if (cmd == "heal" || cmd == "heal me")
     {
         command = FriendCommand::None;
@@ -1597,6 +1621,14 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
     if (partyNearby && ShouldOpportunisticHeal(situation))
         return FriendIntent::SavePartyMember;
 
+    if (command == FriendCommand::Pull)
+    {
+        if (situation.inCombat || situation.hasAttackers || localPartyInCombat)
+            return FriendIntent::DealDamage;
+
+        return FriendIntent::PullWithParty;
+    }
+
     if (situation.hasPriorityCreatureLoot && ShouldLootNow(situation, localPartyInCombat))
         return FriendIntent::LootNearby;
 
@@ -2031,7 +2063,50 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
             return TryActions(DamageActions(situation), "friend fallback damage");
 
         case FriendIntent::PullWithParty:
-            if (TryActions(PullActions(situation), "friend pull"))
+            if (command == FriendCommand::Pull)
+            {
+                if (!HasRangedPullCapability())
+                {
+                    if (ai && ai->GetMaster())
+                        ai->TellPlayerNoFacing(ai->GetMaster(), "I don't have a ranged pull.");
+                    command = FriendCommand::None;
+                    SetResult(intent, "pull blocked:no ranged pull", FriendExecutionResult::BlockedNotPossible);
+                    ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+                    return true;
+                }
+
+                std::string pullReason;
+                Unit* pullTarget = SelectPullTarget(situation, pullReason);
+                if (!pullTarget)
+                {
+                    if (ai && ai->GetMaster())
+                        ai->TellPlayerNoFacing(ai->GetMaster(), "I don't see a safe ranged pull target.");
+                    command = FriendCommand::None;
+                    AddIntentFailurePenalty(FriendIntent::PullWithParty, 80);
+                    SetResult(intent, "pull blocked:no safe ranged target", FriendExecutionResult::BlockedNotUseful);
+                    ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+                    return true;
+                }
+
+                if (TryRangedPull(situation, "friend pull command"))
+                {
+                    MaybeSayActivity(situation, "pull", {
+                        "I'll pull one back.",
+                        "Pulling one over."
+                    }, 100, 30);
+                    return true;
+                }
+
+                if (ai && ai->GetMaster())
+                    ai->TellPlayerNoFacing(ai->GetMaster(), "I can't use a ranged pull on that.");
+                command = FriendCommand::None;
+                AddIntentFailurePenalty(FriendIntent::PullWithParty, 80);
+                SetResult(intent, "pull blocked:no ranged action", FriendExecutionResult::BlockedNotPossible);
+                ai->SetActionDuration(sPlayerbotAIConfig.globalCoolDown);
+                return true;
+            }
+
+            if (TryRangedPull(situation, "friend pull"))
             {
                 MaybeSayActivity(situation, "pull", {
                     "I'll pull one back.",
@@ -2039,19 +2114,6 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
                 }, 35, 45);
                 return true;
             }
-            if (GetDamageTarget(situation, true) || PrepareNearbyFightTarget(situation, "nearby"))
-            {
-                if (TryFreeDamage(situation, "friend pull"))
-                    return true;
-                if (TryCatalogDamage(situation, "friend pull"))
-                    return true;
-                if (PrefersMeleeDamage(situation) && MoveToDamageTarget(situation, "pull engage"))
-                    return true;
-                if (TryActions(DamageActions(situation), "friend pull fallback"))
-                    return true;
-            }
-            if (ExecuteTaskIntent(FriendIntent::Grind, situation))
-                return true;
             AddIntentFailurePenalty(FriendIntent::PullWithParty, 80);
             return false;
 
@@ -2690,6 +2752,270 @@ Unit* FriendBotController::GetDamageTarget(const FriendSituation& situation, boo
 
     SetCurrentDamageTarget(target, reason);
     return target;
+}
+
+Unit* FriendBotController::SelectPullTarget(const FriendSituation& situation, std::string& reason) const
+{
+    reason = "none";
+    if (!ai || !ai->GetBot() || !ai->GetAiObjectContext())
+        return nullptr;
+
+    AiObjectContext* context = ai->GetAiObjectContext();
+    auto accept = [&](Unit* candidate, const std::string& candidateReason, bool explicitTarget) -> Unit*
+    {
+        if (!IsValidPullTarget(candidate, situation, explicitTarget))
+            return nullptr;
+
+        reason = candidateReason;
+        return candidate;
+    };
+
+    Unit* target = GetRaidIconTarget(FRIEND_RTI_SKULL);
+    if (Unit* selected = accept(target, "skull", true))
+        return selected;
+
+    ObjectGuid attackTargetGuid = GetContextValue<ObjectGuid>(context, "attack target", ObjectGuid());
+    target = ai->GetUnit(attackTargetGuid);
+    if (Unit* selected = accept(target, "selected", true))
+        return selected;
+
+    target = ai->GetUnit(situation.leaderTargetGuid);
+    if (Unit* selected = accept(target, "leader", true))
+        return selected;
+
+    target = GetContextValue<Unit*>(context, "rti target", nullptr);
+    if (Unit* selected = accept(target, IsSkullTarget(target) ? "skull" : "rti", true))
+        return selected;
+
+    Player* leader = ai->GetGroupMaster();
+    Unit* bestLeaderLookTarget = nullptr;
+    float bestLeaderLookDistance = 0.0f;
+    if (leader && ai->IsSafe(leader))
+    {
+        std::list<ObjectGuid> nearbyNpcs = context->GetValue<std::list<ObjectGuid> >("nearest npcs no los")->Get();
+        for (std::list<ObjectGuid>::const_iterator itr = nearbyNpcs.begin(); itr != nearbyNpcs.end(); ++itr)
+        {
+            Unit* candidate = ai->GetUnit(*itr);
+            if (!IsValidPullTarget(candidate, situation, false))
+                continue;
+
+            if (!sServerFacade.IsInFront(leader, candidate, sPlayerbotAIConfig.reactDistance, FRIEND_PULL_LEADER_LOOK_ARC))
+                continue;
+
+            const float leaderDistance = sServerFacade.GetDistance2d(leader, candidate);
+            if (!bestLeaderLookTarget || leaderDistance < bestLeaderLookDistance)
+            {
+                bestLeaderLookTarget = candidate;
+                bestLeaderLookDistance = leaderDistance;
+            }
+        }
+    }
+
+    if (Unit* selected = accept(bestLeaderLookTarget, "leader-facing", false))
+        return selected;
+
+    target = GetNearbyFightTarget(situation);
+    if (Unit* selected = accept(target, "nearby", false))
+        return selected;
+
+    Unit* nearestTarget = nullptr;
+    float nearestDistance = 0.0f;
+    std::list<ObjectGuid> possibleTargets = context->GetValue<std::list<ObjectGuid> >("possible attack targets")->Get();
+    for (std::list<ObjectGuid>::const_iterator itr = possibleTargets.begin(); itr != possibleTargets.end(); ++itr)
+    {
+        Unit* candidate = ai->GetUnit(*itr);
+        if (!IsValidPullTarget(candidate, situation, false))
+            continue;
+
+        const float distance = sServerFacade.GetDistance2d(ai->GetBot(), candidate);
+        if (!nearestTarget || distance < nearestDistance)
+        {
+            nearestTarget = candidate;
+            nearestDistance = distance;
+        }
+    }
+
+    if (Unit* selected = accept(nearestTarget, "nearest", false))
+        return selected;
+
+    return nullptr;
+}
+
+bool FriendBotController::IsValidPullTarget(Unit* target, const FriendSituation& situation, bool explicitTarget) const
+{
+    if (!ai || !ai->GetBot() || !IsUsableUnit(ai, target))
+        return false;
+
+    Player* bot = ai->GetBot();
+    if (situation.inTown || sServerFacade.IsFriendlyTo(bot, target) || ShouldAvoidBreakingCrowdControl(target))
+        return false;
+
+    const float distance = sServerFacade.GetDistance2d(bot, target);
+    const float maxDistance = sPlayerbotAIConfig.reactDistance * (explicitTarget ? 3.0f : 1.25f);
+    if (distance < FRIEND_PULL_MIN_DISTANCE || distance > maxDistance)
+        return false;
+
+    if (!bot->IsWithinLOSInMap(target, true))
+        return false;
+
+    if (mode != FriendMode::Solo)
+    {
+        if (!situation.leaderSafe || situation.leaderDistance > HardLeashDistance(situation))
+            return false;
+
+        Player* leader = ai->GetGroupMaster();
+        if (leader && ai->IsSafe(leader))
+        {
+            const float leaderMaxDistance = sPlayerbotAIConfig.reactDistance * (explicitTarget ? 3.0f : 1.25f);
+            if (sServerFacade.GetDistance2d(leader, target) > leaderMaxDistance)
+                return false;
+        }
+    }
+
+    const int32 levelDelta = static_cast<int32>(target->GetLevel()) - static_cast<int32>(bot->GetLevel());
+    if (levelDelta > 3 && mode != FriendMode::Dungeon && !explicitTarget)
+        return false;
+
+    if (IsEliteTarget(ai, target) && mode != FriendMode::Dungeon && !explicitTarget)
+        return false;
+
+    Creature* creature = dynamic_cast<Creature*>(target);
+    if (creature && creature->IsCritter())
+        return false;
+    if (creature && creature->GetCreatureInfo() && creature->GetCreatureInfo()->NpcFlags)
+        return false;
+
+    if (!AttackersValue::IsValid(target, bot, nullptr, false, false))
+        return false;
+
+    return PossibleAttackTargetsValue::IsPossibleTarget(target, bot, maxDistance, true);
+}
+
+bool FriendBotController::HasRangedPullCapability() const
+{
+    if (HasRangedWeaponPull())
+        return true;
+
+    for (const FriendAbility& ability : abilityCatalog.GetAbilities())
+        if (IsPullDamageAbility(ability))
+            return true;
+
+    return false;
+}
+
+bool FriendBotController::HasRangedWeaponPull() const
+{
+    if (!ai || !ai->GetBot())
+        return false;
+
+    const Item* weapon = ai->GetBot()->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+    if (!weapon || !weapon->GetProto())
+        return false;
+
+    switch (weapon->GetProto()->SubClass)
+    {
+        case ITEM_SUBCLASS_WEAPON_GUN:
+        case ITEM_SUBCLASS_WEAPON_BOW:
+        case ITEM_SUBCLASS_WEAPON_CROSSBOW:
+        case ITEM_SUBCLASS_WEAPON_WAND:
+        case ITEM_SUBCLASS_WEAPON_THROWN:
+            break;
+        default:
+            return false;
+    }
+
+#ifdef MANGOSBOT_ZERO
+    if (weapon->GetProto()->SubClass != ITEM_SUBCLASS_WEAPON_WAND)
+    {
+        AiObjectContext* context = ai->GetAiObjectContext();
+        if (!context || context->GetValue<uint32>("item count", "ammo")->Get() == 0)
+            return false;
+    }
+#endif
+
+    return true;
+}
+
+bool FriendBotController::IsPullDamageAbility(const FriendAbility& ability) const
+{
+    if (!ability.Has(FRIEND_ABILITY_RANGED) || ability.Has(FRIEND_ABILITY_MELEE) ||
+        ability.Has(FRIEND_ABILITY_MOVEMENT) || ability.Has(FRIEND_ABILITY_HEAL) ||
+        ability.Has(FRIEND_ABILITY_BUFF_CORE) || ability.Has(FRIEND_ABILITY_BUFF_SITUATIONAL) ||
+        ability.Has(FRIEND_ABILITY_AOE) || ability.Has(FRIEND_ABILITY_FEAR) ||
+        ability.Has(FRIEND_ABILITY_DAMAGE_COOLDOWN))
+        return false;
+
+    if (ability.maxRange < FRIEND_PULL_MIN_DISTANCE)
+        return false;
+
+    if (!ability.Has(FRIEND_ABILITY_DAMAGE) && !ability.Has(FRIEND_ABILITY_DIRECT_DAMAGE) &&
+        !ability.Has(FRIEND_ABILITY_DOT))
+        return false;
+
+    return !ability.Has(FRIEND_ABILITY_CC) || ability.Has(FRIEND_ABILITY_DIRECT_DAMAGE) || ability.Has(FRIEND_ABILITY_DOT);
+}
+
+bool FriendBotController::TryRangedPull(const FriendSituation& situation, const std::string& source)
+{
+    std::string reason;
+    Unit* target = SelectPullTarget(situation, reason);
+    if (!target)
+        return false;
+
+    SetCurrentDamageTarget(target, "pull-" + reason);
+    if (ai && ai->GetAiObjectContext())
+        ai->GetAiObjectContext()->GetValue<ObjectGuid>("attack target")->Set(target->GetObjectGuid());
+
+    if (TryCatalogPullDamage(target, situation, source))
+        return true;
+
+    if (HasRangedWeaponPull() && TryAction("shoot", source) == FriendExecutionResult::Done)
+        return true;
+
+    return false;
+}
+
+bool FriendBotController::TryCatalogPullDamage(Unit* target, const FriendSituation& situation, const std::string& source)
+{
+    if (!target || !IsValidPullTarget(target, situation, true))
+        return false;
+
+    struct Candidate
+    {
+        const FriendAbility* ability;
+        int32 score;
+    };
+
+    std::vector<Candidate> candidates;
+    for (const FriendAbility& ability : abilityCatalog.GetAbilities())
+    {
+        if (!IsPullDamageAbility(ability))
+            continue;
+
+        int32 score = 30;
+        if (ability.Has(FRIEND_ABILITY_DIRECT_DAMAGE))
+            score += 30;
+        if (ability.Has(FRIEND_ABILITY_DOT))
+            score += 15;
+        if (ability.castTime == 0)
+            score += 12;
+        else if (ability.castTime <= 2000)
+            score += 8;
+        if (ability.maxRange >= 25.0f)
+            score += 12;
+
+        score -= ManaSpendScorePenalty(situation, ability);
+        if (score > 0)
+            candidates.push_back({ &ability, score });
+    }
+
+    OrderWeightedTopCandidates(candidates);
+
+    for (const Candidate& candidate : candidates)
+        if (TryCastAbility(*candidate.ability, target, source))
+            return true;
+
+    return false;
 }
 
 Unit* FriendBotController::SelectDamageTarget(const FriendSituation& situation, bool allowCrowdControlFallback, std::string& reason)
@@ -7655,7 +7981,7 @@ void FriendBotController::PrintHelp(Player* requester) const
 
     ai->TellPlayerNoFacing(requester, "modes: party, dungeon, solo, normal/reset, strict/friend off",
         PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
-    ai->TellPlayerNoFacing(requester, "commands: stop, come, stay close, attack, heal, buff, rest, shop/town, summon",
+    ai->TellPlayerNoFacing(requester, "commands: stop, come, stay close, pull, attack, heal, buff, rest, shop/town, summon",
         PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
     ai->TellPlayerNoFacing(requester, "progress: ok, no, forcelevel N, forcelevelsync, forcegearsync, forcegearempty",
         PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, true, false);
@@ -7680,6 +8006,14 @@ void FriendBotController::ResetTemporaryCommandIfSatisfied(const FriendSituation
         !situation.inCombat &&
         situation.botHealth >= FRIEND_REST_DONE_HEALTH &&
         situation.botMana >= FRIEND_REST_DONE_MANA)
+    {
+        command = FriendCommand::None;
+        taskTravelRequested = false;
+        taskTravelPurpose = 0;
+    }
+
+    if (command == FriendCommand::Pull &&
+        (situation.inCombat || situation.partyInCombat || situation.hasAttackers))
     {
         command = FriendCommand::None;
         taskTravelRequested = false;
@@ -7873,19 +8207,6 @@ std::vector<std::string> FriendBotController::CrowdControlActions(const FriendSi
     return actions;
 }
 
-std::vector<std::string> FriendBotController::PullActions(const FriendSituation& situation) const
-{
-    std::vector<std::string> actions;
-    if (mode == FriendMode::Dungeon || situation.inCombat || situation.partyInCombat || situation.damagedPartyMembers ||
-        !situation.leaderSafe || situation.leaderDistance > sPlayerbotAIConfig.reactDistance ||
-        situation.nearbyPartyMembers < 2 || situation.possibleTargetsCount == 0 || situation.possibleTargetsCount > 2)
-        return actions;
-
-    actions.push_back("attack anything");
-
-    return actions;
-}
-
 std::vector<std::string> FriendBotController::DamageActions(const FriendSituation& situation) const
 {
     std::vector<std::string> actions;
@@ -7983,6 +8304,7 @@ std::string FriendBotController::CommandName(FriendCommand value)
         case FriendCommand::HoldPosition: return "hold";
         case FriendCommand::Recover: return "recover";
         case FriendCommand::Shop: return "shop";
+        case FriendCommand::Pull: return "pull";
     }
 
     return "unknown";
