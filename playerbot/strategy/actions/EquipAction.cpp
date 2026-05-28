@@ -175,8 +175,8 @@ void EquipAction::EquipItem(Player* requester, Item* item)
 
 bool EquipUpgradesAction::Execute(Event& event)
 {
-    const bool friendEquipCheck = event.getSource() == "friend equip";
-    if (!friendEquipCheck && !sPlayerbotAIConfig.autoEquipUpgradeLoot && !sRandomPlayerbotMgr.IsRandomBot(bot))
+    const bool friendEquipAllowed = event.getSource() == "friend equip" || (ai && ai->IsFriendMode());
+    if (!friendEquipAllowed && !sPlayerbotAIConfig.autoEquipUpgradeLoot && !sRandomPlayerbotMgr.IsRandomBot(bot))
         return false;
 
     if (event.getSource() == "trade status")
