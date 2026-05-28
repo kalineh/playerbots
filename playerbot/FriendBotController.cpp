@@ -90,16 +90,16 @@ namespace
             actions.push_back(name);
     }
 
-    bool IsPriorityCreatureLoot(Player* bot, const LootObject& loot)
+    bool IsPriorityCreatureLoot(Player* bot, ObjectGuid lootGuid)
     {
-        if (!bot || loot.IsEmpty() || !loot.guid.IsCreature())
+        if (!bot || !lootGuid || !lootGuid.IsCreature())
             return false;
 
         PlayerbotAI* ai = bot->GetPlayerbotAI();
         if (!ai)
             return false;
 
-        Creature* creature = ai->GetCreature(loot.guid);
+        Creature* creature = ai->GetCreature(lootGuid);
         if (!creature || sServerFacade.GetDeathState(creature) != CORPSE || !creature->m_loot)
             return false;
 
@@ -1345,31 +1345,27 @@ FriendSituation FriendBotController::BuildSituation()
                     availableLoot->Add(*itr);
             }
 
-            std::vector<LootObject> orderedLoot = availableLoot->OrderByDistance(sPlayerbotAIConfig.lootDistance);
-            uint8 checkedLoot = 0;
-            for (const LootObject& loot : orderedLoot)
+            scannedCorpses = 0;
+            for (std::list<ObjectGuid>::const_iterator itr = nearbyCorpses.begin(); itr != nearbyCorpses.end(); ++itr)
             {
-                if (checkedLoot++ >= 10)
+                if (scannedCorpses++ >= 10)
                     break;
 
-                if (loot.guid.IsCreature())
-                {
-                    situation.hasCreatureLoot = true;
-                    if (IsPriorityCreatureLoot(bot, loot))
-                    {
-                        WorldObject* lootWorldObject = loot.GetWorldObject(bot);
-                        if (lootWorldObject)
-                        {
-                            situation.hasPriorityCreatureLoot = true;
-                            situation.priorityCreatureLootDistance = sServerFacade.GetDistance2d(bot, lootWorldObject);
-                            break;
-                        }
-                    }
-
+                LootObject loot(bot, *itr);
+                if (loot.IsEmpty() || !loot.guid.IsCreature() || !loot.IsLootPossible(bot))
                     continue;
-                }
 
-                availableLoot->Remove(loot.guid);
+                WorldObject* lootWorldObject = loot.GetWorldObject(bot);
+                if (!lootWorldObject || bot->GetDistance(lootWorldObject) > sPlayerbotAIConfig.lootDistance)
+                    continue;
+
+                situation.hasCreatureLoot = true;
+                if (IsPriorityCreatureLoot(bot, loot.guid))
+                {
+                    situation.hasPriorityCreatureLoot = true;
+                    situation.priorityCreatureLootDistance = sServerFacade.GetDistance2d(bot, lootWorldObject);
+                    break;
+                }
             }
         }
 
