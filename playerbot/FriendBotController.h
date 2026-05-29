@@ -379,6 +379,7 @@ namespace ai
         time_t manualAttackUntil = 0;
         time_t manualHealUntil = 0;
         time_t manualBuffUntil = 0;
+        time_t meleeCommitUntil = 0;
         ObjectGuid manualHealGuid;
         int32 intentFailurePenalty[static_cast<uint8>(FriendIntent::Max)] = {};
         time_t intentFailurePenaltyAt[static_cast<uint8>(FriendIntent::Max)] = {};

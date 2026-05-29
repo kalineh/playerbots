@@ -74,6 +74,7 @@ namespace
     const uint32 FRIEND_ACTIVITY_MIN_COOLDOWN = 15;
     const float FRIEND_PULL_MIN_DISTANCE = 8.0f;
     const float FRIEND_PULL_LEADER_LOOK_ARC = M_PI_F / 3.0f;
+    const uint32 FRIEND_MELEE_COMMIT_SECONDS = 4;
 
     uint32 FriendVendorNpcFlags()
     {
@@ -738,6 +739,7 @@ void FriendBotController::Reset()
     manualAttackUntil = 0;
     manualHealUntil = 0;
     manualBuffUntil = 0;
+    meleeCommitUntil = 0;
     ClearIntentFailurePenalties();
     manualHealGuid = ObjectGuid();
     executionTask = FriendTaskType::None;
@@ -848,6 +850,7 @@ bool FriendBotController::HandleCommand(const std::string& rawCommand, Player* r
         manualAttackUntil = 0;
         manualHealUntil = 0;
         manualBuffUntil = 0;
+        meleeCommitUntil = 0;
         ClearIntentFailurePenalties();
         manualHealGuid = ObjectGuid();
         ClearExecutionState();
@@ -3812,16 +3815,30 @@ bool FriendBotController::TryStartMeleeAttack(Unit* target, const std::string& s
     (void)source;
 
     if (!ai || !ai->GetBot() || !ai->GetAiObjectContext() || !target)
+    {
+        SetResult(lastIntent, "melee blocked:no target", FriendExecutionResult::BlockedNotUseful);
         return false;
+    }
 
     Player* bot = ai->GetBot();
     if (!IsValidFriendDamageTarget(target, true) || sServerFacade.IsFriendlyTo(bot, target) ||
         sServerFacade.UnitIsDead(target))
+    {
+        SetResult(lastIntent, "melee blocked:invalid target", FriendExecutionResult::BlockedNotUseful);
         return false;
+    }
 
-    if (!bot->CanReachWithMeleeAttack(target) ||
-        !bot->IsWithinLOSInMap(target, true))
+    if (!bot->CanReachWithMeleeAttack(target))
+    {
+        SetResult(lastIntent, "melee blocked:range", FriendExecutionResult::BlockedNotUseful);
         return false;
+    }
+
+    if (!bot->IsWithinLOSInMap(target, true))
+    {
+        SetResult(lastIntent, "melee blocked:los", FriendExecutionResult::BlockedNotUseful);
+        return false;
+    }
 
     AiObjectContext* context = ai->GetAiObjectContext();
     context->GetValue<Unit*>("current target")->Set(target);
@@ -3834,12 +3851,16 @@ bool FriendBotController::TryStartMeleeAttack(Unit* target, const std::string& s
         started = true;
 
     if (!started)
+    {
+        SetResult(lastIntent, "melee blocked:attack failed", FriendExecutionResult::Failed);
         return false;
+    }
 
     if (LootObjectStack* availableLoot = GetContextValue<LootObjectStack*>(context, "available loot", nullptr))
         availableLoot->Add(target->GetObjectGuid());
 
     ai->OnCombatStarted();
+    meleeCommitUntil = time(nullptr) + FRIEND_MELEE_COMMIT_SECONDS;
     SetResult(lastIntent, "melee attack", FriendExecutionResult::Done);
     ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
     return true;
@@ -4158,7 +4179,11 @@ bool FriendBotController::MoveToDamageTarget(const FriendSituation& situation, c
     AiObjectContext* context = ai->GetAiObjectContext();
     context->GetValue<Unit*>("current target")->Set(target);
     bot->SetSelectionGuid(target->GetObjectGuid());
-    return MoveToUnitRange(target, desiredDistance, action);
+    const bool moved = MoveToUnitRange(target, desiredDistance, action);
+    if (moved && action == "move to melee")
+        meleeCommitUntil = time(nullptr) + FRIEND_MELEE_COMMIT_SECONDS;
+
+    return moved;
 }
 
 bool FriendBotController::MoveToUnitRange(Unit* target, float desiredDistance, const std::string& action)
@@ -4264,6 +4289,9 @@ bool FriendBotController::PrefersMeleeDamage(const FriendSituation& situation) c
 bool FriendBotController::ShouldUseRangedCombatSpacing(const FriendSituation& situation) const
 {
     if ((!situation.ranged && !situation.healerish) || situation.tankish)
+        return false;
+
+    if (time(nullptr) < meleeCommitUntil)
         return false;
 
     if (GetCombatStyle(situation) == FriendCombatStyle::Dry && !HasRangedWeaponPull())
@@ -4863,6 +4891,10 @@ bool FriendBotController::TryCatalogDamage(const FriendSituation& situation, con
             continue;
 
         if (ability.Has(FRIEND_ABILITY_CC) && !ability.Has(FRIEND_ABILITY_DAMAGE) && !ability.Has(FRIEND_ABILITY_INTERRUPT))
+            continue;
+
+        if (ShouldUseRangedCombatSpacing(situation) &&
+            ability.Has(FRIEND_ABILITY_MELEE) && !ability.Has(FRIEND_ABILITY_RANGED))
             continue;
 
         if (ability.Has(FRIEND_ABILITY_DOT) && targetHealth < 35)
