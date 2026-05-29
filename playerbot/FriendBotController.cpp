@@ -293,7 +293,15 @@ namespace
 
     bool IsMovingForAction(PlayerbotAI* ai, const std::string& lastAction, const std::string& action)
     {
-        return ai && ai->GetBot() && lastAction == action && sServerFacade.isMoving(ai->GetBot());
+        if (!ai || !ai->GetBot() || !sServerFacade.isMoving(ai->GetBot()))
+            return false;
+
+        if (lastAction == action)
+            return true;
+
+        return lastAction.size() > action.size() &&
+            lastAction.compare(0, action.size(), action) == 0 &&
+            lastAction[action.size()] == ':';
     }
 
     bool StartsWith(const std::string& value, const std::string& prefix)
@@ -646,6 +654,7 @@ namespace
             action == "pull engage" ||
             action == "move for trade" ||
             action == "ranged spacing" ||
+            StartsWith(action, "ranged spacing:") ||
             StartsWith(action, "move for spell:");
     }
 
@@ -4007,12 +4016,15 @@ bool FriendBotController::TryImproveRangedCombatSpacing(const FriendSituation& s
         return false;
 
     const float distance = sServerFacade.GetDistance2d(bot, target);
-    if (distance >= FRIEND_RANGED_SPACING_MIN && bot->IsWithinLOSInMap(target, true))
+    const bool hasLos = bot->IsWithinLOSInMap(target, true);
+    if (distance >= FRIEND_RANGED_SPACING_MIN && hasLos)
         return false;
+
+    const std::string spacingAction = action + (distance < FRIEND_RANGED_SPACING_MIN ? ":too-close" : ":line-of-sight");
 
     if (IsMovingForAction(ai, lastAction, action))
     {
-        SetResult(lastIntent, action, FriendExecutionResult::Done);
+        SetResult(lastIntent, spacingAction, FriendExecutionResult::Done);
         ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
         return true;
     }
@@ -4033,7 +4045,7 @@ bool FriendBotController::TryImproveRangedCombatSpacing(const FriendSituation& s
         return false;
     }
 
-    SetResult(lastIntent, action, FriendExecutionResult::Done);
+    SetResult(lastIntent, spacingAction, FriendExecutionResult::Done);
     ai->SetActionDuration(sPlayerbotAIConfig.reactDelay);
     return true;
 }
@@ -4299,6 +4311,10 @@ bool FriendBotController::ShouldUseRangedCombatSpacing(const FriendSituation& si
         return false;
 
     if (time(nullptr) < meleeCommitUntil)
+        return false;
+
+    if (ai && ai->GetBot() && ai->GetBot()->HasMana() &&
+        situation.botMana < sPlayerbotAIConfig.lowMana && !HasRangedWeaponPull())
         return false;
 
     if (GetCombatStyle(situation) == FriendCombatStyle::Dry && !HasRangedWeaponPull())
