@@ -1653,8 +1653,9 @@ FriendIntent FriendBotController::SelectIntent(const FriendSituation& situation)
         SelfThreatDangerScore(situation) >= 45)
         return FriendIntent::CrowdControl;
 
-    if (situation.inCombat && (((situation.ranged || situation.healerish) && situation.hasAttackers) ||
-        (situation.ranged && situation.targetDistance > 0.0f && situation.targetDistance < 8.0f)))
+    const bool useRangedCombatSpacing = ShouldUseRangedCombatSpacing(situation);
+    if (situation.inCombat && ((useRangedCombatSpacing && situation.hasAttackers) ||
+        (useRangedCombatSpacing && situation.ranged && situation.targetDistance > 0.0f && situation.targetDistance < 8.0f)))
         return FriendIntent::ImprovePosition;
 
     if (!situation.inCombat && situation.botMana < sPlayerbotAIConfig.lowMana &&
@@ -1903,6 +1904,8 @@ bool FriendBotController::ExecuteIntent(FriendIntent intent, const FriendSituati
                 return true;
             if (TryCatalogDamage(situation, "friend damage"))
                 return true;
+            if (ShouldUseRangedCombatSpacing(situation))
+                return false;
             return TryActions(DamageActions(situation), "friend fallback damage");
 
         case FriendIntent::RecoverResources:
@@ -3967,7 +3970,7 @@ bool FriendBotController::TryImproveRangedCombatSpacing(const FriendSituation& s
     if (!bot->GetMotionMaster() || bot->IsNonMeleeSpellCasted(true))
         return false;
 
-    if ((!situation.ranged && !situation.healerish) || situation.tankish ||
+    if (!ShouldUseRangedCombatSpacing(situation) ||
         situation.hasAttackers || situation.botHasThreat || situation.attackersTargetingMeCount > 0)
         return false;
 
@@ -4256,6 +4259,17 @@ bool FriendBotController::PrefersMeleeDamage(const FriendSituation& situation) c
         default:
             return false;
     }
+}
+
+bool FriendBotController::ShouldUseRangedCombatSpacing(const FriendSituation& situation) const
+{
+    if ((!situation.ranged && !situation.healerish) || situation.tankish)
+        return false;
+
+    if (GetCombatStyle(situation) == FriendCombatStyle::Dry && !HasRangedWeaponPull())
+        return false;
+
+    return true;
 }
 
 bool FriendBotController::PrefersSelfDefenseTarget(const FriendSituation& situation) const
