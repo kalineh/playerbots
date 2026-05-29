@@ -129,6 +129,11 @@ namespace
         return false;
     }
 
+    uint32 FriendSoftGearUpgradeCost(uint32 level)
+    {
+        return std::max<uint32>(250, (level * level * level) / 2);
+    }
+
     bool IsServiceTravelPurpose(uint32 purpose)
     {
         return purpose == FRIEND_VENDOR_TRAVEL_PURPOSE ||
@@ -1294,8 +1299,10 @@ FriendSituation FriendBotController::BuildSituation()
         situation.shouldTrain = situation.trainCost > 0 && situation.trainCost <=
             context->GetValue<uint32>("free money for", static_cast<uint32>(NeedMoneyFor::spells))->Get();
         situation.shouldUpgradeBags = situation.bagSpace > 70 && EquippedBagSlots() < 4 && situation.gearBudget >= 500;
-        uint32 gearCost = std::max<uint32>(1000, (bot->GetLevel() * bot->GetLevel() * bot->GetLevel()) / 2);
-        situation.shouldUpgradeGear = situation.gearBudget >= gearCost;
+        uint32 gearCost = FriendSoftGearUpgradeCost(bot->GetLevel());
+        uint32 gearPurchaseBudget = command == FriendCommand::Shop ?
+            std::max(situation.gearBudget, situation.money) : situation.gearBudget;
+        situation.shouldUpgradeGear = gearPurchaseBudget >= gearCost;
 
         std::set<ObjectGuid> actualAttackers;
         auto addActualAttacker = [&](Unit* unit)
@@ -6165,13 +6172,15 @@ bool FriendBotController::TrySoftGearUpgrade(const FriendSituation& situation)
         return false;
 
     Player* bot = ai->GetBot();
-    uint32 cost = std::max<uint32>(1000, (bot->GetLevel() * bot->GetLevel() * bot->GetLevel()) / 2);
+    uint32 cost = FriendSoftGearUpgradeCost(bot->GetLevel());
     uint32 freeMoney = ai->GetAiObjectContext() ?
         ai->GetAiObjectContext()->GetValue<uint32>("free money for", static_cast<uint32>(NeedMoneyFor::gear))->Get() :
         bot->GetMoney();
+    if (command == FriendCommand::Shop)
+        freeMoney = std::max(freeMoney, bot->GetMoney());
 
-    uint32 quality = ITEM_QUALITY_NORMAL;
-    if (bot->GetLevel() >= 8 && freeMoney >= cost && bot->GetMoney() >= cost)
+    uint32 quality = bot->GetLevel() >= 5 ? ITEM_QUALITY_UNCOMMON : ITEM_QUALITY_NORMAL;
+    if (bot->GetLevel() >= 18)
     {
         quality = ITEM_QUALITY_UNCOMMON;
         if (bot->GetLevel() >= 18 && freeMoney >= cost * 2 && bot->GetMoney() >= cost * 2)
